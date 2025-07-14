@@ -1,0 +1,35 @@
+# Node.js
+node_modules/
+package-lock.json
+yarn.lock
+npm-debug.log*
+
+# Python
+__pycache__/
+*.py[cod]
+*.pyo
+*.pyd
+*.env
+*.venv
+env/
+venv/
+ENV/
+
+# OS
+.DS_Store
+Thumbs.db
+
+# VSCode
+.vscode/
+
+# Logs
+logs/
+*.log
+
+# Build output
+dist/
+build/
+.next/
+
+# Misc
+*.swp 
