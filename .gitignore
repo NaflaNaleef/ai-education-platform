@@ -33,3 +33,4 @@ build/
 
 # Misc
 *.swp 
+**/.env.local 
