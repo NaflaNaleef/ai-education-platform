@@ -1,3 +1,4 @@
+# apps/backend/ai/requirements.txt
 fastapi==0.104.1
 uvicorn==0.24.0
 python-multipart==0.0.6
@@ -5,5 +6,13 @@ pydantic==2.5.0
 requests==2.31.0
 python-dotenv==1.0.0
 
+# Day 7: PDF and Document Processing
+PyPDF2==3.0.1
+pdfplumber==0.10.3
+python-docx==1.1.0
+nltk==3.8.1
+textstat==0.7.3
+
+# For Week 2 (Day 8) - Gemini integration:
 google-cloud-aiplatform==1.38.0
 google-generativeai==0.3.2 

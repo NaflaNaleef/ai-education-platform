@@ -44,11 +44,18 @@ class ContentAnalysisRequest(BaseModel):
 
 class ContentAnalysisResponse(BaseModel):
     success: bool
-    content_type: str
-    word_count: int
-    language: str
-    suitable_for_questions: bool
-    message: str
+    content_type: Optional[str] = None
+    word_count: Optional[int] = None
+    language: Optional[str] = None
+    suitable_for_questions: Optional[bool] = None
+    message: Optional[str] = None
+    educational_score: Optional[int] = None
+    quality_score: Optional[int] = None
+    reading_level: Optional[float] = None
+    grade_level: Optional[float] = None
+    subject_confidence: Optional[int] = None
+    detected_title: Optional[str] = None
+    chunk_count: Optional[int] = None
 
 class QuestionGenerationRequest(BaseModel):
     content: str
