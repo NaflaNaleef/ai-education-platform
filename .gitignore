@@ -34,3 +34,5 @@ build/
 # Misc
 *.swp 
 **/.env.local 
+
+apps/backend/ai/.env 

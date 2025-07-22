@@ -1,68 +1,6 @@
 # Resource Management API
 
-## Authentication
-
-All endpoints require Supabase session cookies:
-- `sb-access-token`
-- `sb-refresh-token`
-
-## Endpoints
-
-### POST /api/upload/resource
-Upload a file with title and description.
-
-**Headers:**  
-Cookie: sb-access-token=...; sb-refresh-token=...
-
-**Form Data:**
-- file: File (PDF, DOCX, DOC, TXT, max 10MB, required)
-- title: string (optional)
-- description: string (optional)
-
-**Response:**
-```json
-{
-  "message": "File uploaded successfully",
-  "resource": { /* resource object */ }
-}
-```
-
----
-
-### GET /api/resources
-Get all resources uploaded by the current user.
-
-**Headers:**  
-Cookie: sb-access-token=...; sb-refresh-token=...
-
-**Response:**
-```json
-{
-  "resources": [ /* array of resource objects */ ]
-}
-```
-
----
-
-### GET /api/resources/download?id=RESOURCE_ID
-Get a download URL and metadata for a specific resource.
-
-**Headers:**  
-Cookie: sb-access-token=...; sb-refresh-token=...
-
-**Response:**
-```json
-{
-  "downloadUrl": "...",
-  "title": "...",
-  "description": "...",
-  "fileType": "...",
-  "fileSize": 12345,
-  "uploadStatus": "ready"
-}
-```
-
----
+All resource-related API endpoints are now documented in [api-endpoints.md](./api-endpoints.md).
 
 ## Example: File Upload (Frontend)
 ```js
