@@ -1,6 +1,6 @@
 import { NextRequest, NextResponse } from 'next/server';
-import { supabaseAdmin } from '@/lib/db/supabase';
-import { ApiResponse } from '@/lib/utils/validation';
+import { supabaseAdmin } from '../../../../../lib/db/supabase';
+import { ApiResponse } from '../../../../../lib/utils/validation';
 
 interface RoleResponse {
     role: string;

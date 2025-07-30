@@ -1,9 +1,9 @@
 import { NextRequest, NextResponse } from 'next/server';
-import { supabaseAdmin } from '@/lib/db/supabase';
-import { CreateUserSchema, UpdateUserSchema, ApiResponse, UserResponse } from '@/lib/utils/validation';
+import { supabaseAdmin } from '../../../../lib/db/supabase';
+import { CreateUserSchema, UpdateUserSchema, ApiResponse, UserResponse } from '../../../../lib/utils/validation';
 
 // CREATE USER (called after Clerk signup)
-export async function POST(request: NextRequest): Promise<NextResponse<ApiResponse<UserResponse>>> {
+export async function POST(request: NextRequest): Promise<NextResponse<ApiResponse<UserResponse> | { success: false; error: string; data?: any }>> {
     try {
         const body = await request.json();
         const validatedData = CreateUserSchema.parse(body);
@@ -78,7 +78,7 @@ export async function POST(request: NextRequest): Promise<NextResponse<ApiRespon
 }
 
 // GET CURRENT USER
-export async function GET(request: NextRequest): Promise<NextResponse<ApiResponse<UserResponse>>> {
+export async function GET(request: NextRequest): Promise<NextResponse<ApiResponse<UserResponse> | { success: false; error: string; data?: any }>> {
     try {
         const clerkId = request.headers.get('x-clerk-user-id');
 
@@ -127,7 +127,7 @@ export async function GET(request: NextRequest): Promise<NextResponse<ApiRespons
 }
 
 // UPDATE USER PROFILE
-export async function PUT(request: NextRequest): Promise<NextResponse<ApiResponse<UserResponse>>> {
+export async function PUT(request: NextRequest): Promise<NextResponse<ApiResponse<UserResponse> | { success: false; error: string; data?: any }>> {
     try {
         const clerkId = request.headers.get('x-clerk-user-id');
 

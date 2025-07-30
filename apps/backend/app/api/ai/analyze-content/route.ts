@@ -1,6 +1,6 @@
 import { NextRequest, NextResponse } from 'next/server';
-import { aiClient } from '@lib/ai/ai-client';
-import { supabaseAdmin as supabase } from '@lib/db/supabase';
+import { aiClient } from '../../../lib/ai/ai-client';
+import { supabaseAdmin as supabase } from '../../../lib/db/supabase';
 
 export async function POST(request: NextRequest) {
     try {

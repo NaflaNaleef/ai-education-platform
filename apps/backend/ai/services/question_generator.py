@@ -176,7 +176,7 @@ class QuestionGenerator:
                 "success": True,
                 "total_questions": len(questions),
                 "questions": questions,
-                "marking_scheme": self._generate_marking_scheme(questions),
+                "marking_scheme": await self.create_marking_scheme(questions),
                 "generation_time": generation_time,
                 "cost_estimate": "$0.00 (FREE TIER)" if self.use_free_tier else self._estimate_cost(content, question_count),
                 "daily_requests": self.daily_requests,
@@ -310,7 +310,7 @@ Generate {count} high-quality questions now:
         return questions
     
     async def create_marking_scheme(self, questions: List[Dict]) -> Dict:
-        """Day 8: Create marking scheme for generated questions"""
+        """Day 8: Create marking scheme for generated questions using AI"""
         if not questions:
             return {
                 "success": False,
@@ -318,13 +318,299 @@ Generate {count} high-quality questions now:
                 "scheme": {}
             }
         
+        if not self.gemini_ready:
+            logger.warning("⚠️ Gemini not available, using basic marking scheme")
+            return {
+                "success": True,
+                "scheme": self._generate_basic_marking_scheme(questions)
+            }
+        
+        try:
+            logger.info(f"🤖 Generating AI-powered marking scheme for {len(questions)} questions")
+            
+            # Create AI prompt for marking scheme generation
+            prompt = self._create_marking_scheme_prompt(questions)
+            
+            # Call Gemini API
+            response = await self._call_gemini_api(prompt)
+            
+            # Parse AI response
+            ai_marking_scheme = self._parse_marking_scheme_response(response.text, questions)
+            
+            # Combine AI-generated scheme with basic structure
+            final_scheme = self._combine_marking_schemes(ai_marking_scheme, questions)
+            
+            logger.info("✅ AI marking scheme generated successfully")
+            
+            return {
+                "success": True,
+                "scheme": final_scheme
+            }
+            
+        except Exception as e:
+            logger.error(f"❌ AI marking scheme generation failed: {str(e)}")
+            logger.info("🔄 Falling back to basic marking scheme")
+            return {
+                "success": True,
+                "scheme": self._generate_basic_marking_scheme(questions)
+            }
+    
+    def _create_marking_scheme_prompt(self, questions: List[Dict]) -> str:
+        """Create AI prompt for marking scheme generation"""
+        prompt = f"""
+You are an expert educator creating a detailed marking scheme for {len(questions)} questions. 
+
+For each question, provide:
+1. Specific grading criteria
+2. Key points/keywords that should be included
+3. Point allocation breakdown
+4. Feedback templates
+5. Partial credit guidelines
+
+Questions to analyze:
+"""
+        
+        for i, question in enumerate(questions, 1):
+            prompt += f"""
+Question {i}:
+- Type: {question.get('type', 'multiple_choice')}
+- Points: {question.get('points', 2)}
+- Question: {question.get('question', '')}
+- Correct Answer: {question.get('correct_answer', '')}
+- Explanation: {question.get('explanation', '')}
+"""
+        
+        prompt += """
+
+Please respond in this exact JSON format:
+{
+  "total_points": <total>,
+  "total_questions": <count>,
+  "time_limit_minutes": <estimated_time>,
+  "question_breakdown": {
+    "multiple_choice": <count>,
+    "short_answer": <count>,
+    "essay": <count>
+  },
+  "grading_instructions": {
+    "multiple_choice": "<instruction>",
+    "short_answer": "<instruction>",
+    "essay": "<instruction>"
+  },
+  "criteria": [
+    {
+      "question_id": "<id>",
+      "question_number": <number>,
+      "type": "<type>",
+      "points": <points>,
+      "correct_answer": "<answer>",
+      "explanation": "<explanation>",
+      "grading_method": "<exact_match|keyword_match|ai_enhanced>",
+      "keywords": ["<keyword1>", "<keyword2>", ...],
+      "feedback_template": "<template>",
+      "partial_credit_rules": {
+        "exact_match": <boolean>,
+        "case_sensitive": <boolean>,
+        "allow_partial": <boolean>,
+        "min_keywords": <number>,
+        "keyword_weight": <number>
+      },
+      "ai_grading_prompt": "<specific prompt for AI grading>"
+    }
+  ],
+  "version": "2.0",
+  "ai_generated": true
+}
+
+Focus on creating fair, consistent, and educational grading criteria.
+"""
+        return prompt
+    
+    def _parse_marking_scheme_response(self, response_text: str, questions: List[Dict]) -> Dict:
+        """Parse AI-generated marking scheme response"""
+        try:
+            # Extract JSON from response
+            import re
+            import json
+            
+            # Find JSON block in response
+            json_match = re.search(r'\{.*\}', response_text, re.DOTALL)
+            if not json_match:
+                raise ValueError("No JSON found in AI response")
+            
+            json_str = json_match.group()
+            ai_scheme = json.loads(json_str)
+            
+            # Validate and clean the AI response
+            cleaned_scheme = self._validate_and_clean_ai_scheme(ai_scheme, questions)
+            
+            return cleaned_scheme
+            
+        except Exception as e:
+            logger.error(f"Failed to parse AI marking scheme: {e}")
+            raise ValueError(f"Invalid AI marking scheme format: {str(e)}")
+    
+    def _validate_and_clean_ai_scheme(self, ai_scheme: Dict, questions: List[Dict]) -> Dict:
+        """Validate and clean AI-generated marking scheme"""
+        # Ensure required fields exist
+        if 'criteria' not in ai_scheme:
+            ai_scheme['criteria'] = []
+        
+        if 'total_points' not in ai_scheme:
+            ai_scheme['total_points'] = sum(q.get('points', 2) for q in questions)
+        
+        if 'total_questions' not in ai_scheme:
+            ai_scheme['total_questions'] = len(questions)
+        
+        # Clean and validate criteria
+        cleaned_criteria = []
+        for i, question in enumerate(questions):
+            question_id = question.get('id', f'q{i+1}')
+            
+            # Find matching AI criteria
+            ai_criteria = None
+            for criteria in ai_scheme.get('criteria', []):
+                if criteria.get('question_id') == question_id or criteria.get('question_number') == i + 1:
+                    ai_criteria = criteria
+                    break
+            
+            if ai_criteria:
+                # Clean and validate the criteria
+                cleaned_criteria.append({
+                    'question_id': question_id,
+                    'question_number': i + 1,
+                    'type': question.get('type', 'multiple_choice'),
+                    'points': question.get('points', 2),
+                    'correct_answer': question.get('correct_answer', ''),
+                    'explanation': question.get('explanation', ''),
+                    'grading_method': ai_criteria.get('grading_method', 'keyword_match'),
+                    'keywords': ai_criteria.get('keywords', self._extract_keywords(question.get('correct_answer', ''))),
+                    'feedback_template': ai_criteria.get('feedback_template', self._generate_feedback_template(question)),
+                    'partial_credit_rules': {
+                        'exact_match': ai_criteria.get('partial_credit_rules', {}).get('exact_match', question.get('type') == 'multiple_choice'),
+                        'case_sensitive': ai_criteria.get('partial_credit_rules', {}).get('case_sensitive', False),
+                        'allow_partial': ai_criteria.get('partial_credit_rules', {}).get('allow_partial', question.get('type') != 'multiple_choice'),
+                        'min_keywords': ai_criteria.get('partial_credit_rules', {}).get('min_keywords', max(1, len(ai_criteria.get('keywords', [])) // 2)),
+                        'keyword_weight': ai_criteria.get('partial_credit_rules', {}).get('keyword_weight', 1.0)
+                    },
+                    'ai_grading_prompt': ai_criteria.get('ai_grading_prompt', self._generate_ai_grading_prompt(question))
+                })
+            else:
+                # Create default criteria if AI didn't provide one
+                cleaned_criteria.append(self._create_default_criteria(question, i + 1))
+        
+        ai_scheme['criteria'] = cleaned_criteria
+        ai_scheme['generated_at'] = datetime.now().isoformat()
+        
+        return ai_scheme
+    
+    def _create_default_criteria(self, question: Dict, question_number: int) -> Dict:
+        """Create default criteria for a question"""
         return {
-            "success": True,
-            "scheme": self._generate_marking_scheme(questions)
+            'question_id': question.get('id', f'q{question_number}'),
+            'question_number': question_number,
+            'type': question.get('type', 'multiple_choice'),
+            'points': question.get('points', 2),
+            'correct_answer': question.get('correct_answer', ''),
+            'explanation': question.get('explanation', ''),
+            'grading_method': self._determine_grading_method(question),
+            'keywords': self._extract_keywords(question.get('correct_answer', '')),
+            'feedback_template': self._generate_feedback_template(question),
+            'partial_credit_rules': {
+                'exact_match': question.get('type') == 'multiple_choice',
+                'case_sensitive': False,
+                'allow_partial': question.get('type') != 'multiple_choice',
+                'min_keywords': max(1, len(self._extract_keywords(question.get('correct_answer', ''))) // 2),
+                'keyword_weight': 1.0
+            },
+            'ai_grading_prompt': self._generate_ai_grading_prompt(question)
         }
     
-    def _generate_marking_scheme(self, questions: List[Dict]) -> Dict:
-        """Day 8: Generate marking scheme for questions"""
+    def _generate_ai_grading_prompt(self, question: Dict) -> str:
+        """Generate specific AI grading prompt for a question"""
+        question_type = question.get('type', 'multiple_choice')
+        question_text = question.get('question', '')
+        correct_answer = question.get('correct_answer', '')
+        explanation = question.get('explanation', '')
+        points = question.get('points', 2)
+        
+        if question_type == 'multiple_choice':
+            return f"""
+Grade this multiple choice answer:
+Question: {question_text}
+Correct Answer: {correct_answer}
+Student Answer: {{student_answer}}
+Points Possible: {points}
+
+Award full points for exact match (case-insensitive).
+Award 0 points for incorrect answer.
+"""
+        elif question_type == 'short_answer':
+            return f"""
+Grade this short answer:
+Question: {question_text}
+Correct Answer: {correct_answer}
+Explanation: {explanation}
+Student Answer: {{student_answer}}
+Points Possible: {points}
+
+Key points to look for: {', '.join(self._extract_keywords(correct_answer))}
+
+Award partial credit for including key concepts.
+Award full points for complete and accurate answer.
+"""
+        else:  # essay
+            return f"""
+Grade this essay answer:
+Question: {question_text}
+Correct Answer: {correct_answer}
+Explanation: {explanation}
+Student Answer: {{student_answer}}
+Points Possible: {points}
+
+Key concepts to evaluate: {', '.join(self._extract_keywords(correct_answer))}
+
+Consider:
+- Understanding of key concepts
+- Clarity of explanation
+- Completeness of answer
+- Accuracy of information
+"""
+    
+    def _combine_marking_schemes(self, ai_scheme: Dict, questions: List[Dict]) -> Dict:
+        """Combine AI scheme with basic structure"""
+        # Calculate time limit
+        total_time = 0
+        for q in questions:
+            if q.get('type') == 'multiple_choice':
+                total_time += 2
+            elif q.get('type') == 'short_answer':
+                total_time += 5
+            else:
+                total_time += 3
+        
+        # Ensure basic structure exists
+        if 'time_limit_minutes' not in ai_scheme:
+            ai_scheme['time_limit_minutes'] = total_time
+        
+        if 'question_breakdown' not in ai_scheme:
+            ai_scheme['question_breakdown'] = {
+                "multiple_choice": len([q for q in questions if q.get('type') == 'multiple_choice']),
+                "short_answer": len([q for q in questions if q.get('type') == 'short_answer']),
+                "essay": len([q for q in questions if q.get('type') == 'essay'])
+            }
+        
+        if 'grading_instructions' not in ai_scheme:
+            ai_scheme['grading_instructions'] = {
+                "multiple_choice": "Award full points for correct answer",
+                "short_answer": "Award partial credit for partially correct answers",
+                "essay": "Use rubric to evaluate key points"
+            }
+        
+        return ai_scheme
+    
+    def _generate_basic_marking_scheme(self, questions: List[Dict]) -> Dict:
+        """Generate basic marking scheme when AI is not available"""
         total_points = sum(q.get('points', 2) for q in questions)
         
         total_time = 0
@@ -335,6 +621,30 @@ Generate {count} high-quality questions now:
                 total_time += 5
             else:
                 total_time += 3
+        
+        # Generate basic criteria for each question
+        criteria = []
+        for i, question in enumerate(questions):
+            question_criteria = {
+                'question_id': question.get('id', f'q{i+1}'),
+                'question_number': i + 1,
+                'type': question.get('type', 'multiple_choice'),
+                'points': question.get('points', 2),
+                'correct_answer': question.get('correct_answer', ''),
+                'explanation': question.get('explanation', ''),
+                'grading_method': self._determine_grading_method(question),
+                'keywords': self._extract_keywords(question.get('correct_answer', '')),
+                'feedback_template': self._generate_feedback_template(question),
+                'partial_credit_rules': {
+                    'exact_match': question.get('type') == 'multiple_choice',
+                    'case_sensitive': False,
+                    'allow_partial': question.get('type') != 'multiple_choice',
+                    'min_keywords': max(1, len(self._extract_keywords(question.get('correct_answer', ''))) // 2),
+                    'keyword_weight': 1.0
+                },
+                'ai_grading_prompt': self._generate_ai_grading_prompt(question)
+            }
+            criteria.append(question_criteria)
         
         return {
             "total_points": total_points,
@@ -349,8 +659,64 @@ Generate {count} high-quality questions now:
                 "multiple_choice": "Award full points for correct answer",
                 "short_answer": "Award partial credit for partially correct answers",
                 "essay": "Use rubric to evaluate key points"
-            }
+            },
+            "criteria": criteria,
+            "version": "2.0",
+            "ai_generated": False,
+            "generated_at": datetime.now().isoformat()
         }
+    
+    def _determine_grading_method(self, question: Dict) -> str:
+        """Determine the best grading method for a question"""
+        question_type = question.get('type', 'multiple_choice')
+        correct_answer = question.get('correct_answer', '')
+        
+        if question_type == 'multiple_choice':
+            return 'exact_match'
+        elif question_type == 'short_answer':
+            if len(correct_answer.split()) <= 3:
+                return 'exact_match'
+            else:
+                return 'keyword_match'
+        elif question_type == 'essay':
+            return 'keyword_match'
+        else:
+            return 'keyword_match'
+    
+    def _extract_keywords(self, text: str) -> List[str]:
+        """Extract important keywords from text for grading"""
+        if not text:
+            return []
+        
+        # Remove common words and punctuation
+        import re
+        words = re.findall(r'\b\w+\b', text.lower())
+        
+        # Filter out common words
+        common_words = {
+            'the', 'a', 'an', 'and', 'or', 'but', 'in', 'on', 'at', 'to', 'for',
+            'of', 'with', 'by', 'is', 'are', 'was', 'were', 'be', 'been', 'being',
+            'have', 'has', 'had', 'do', 'does', 'did', 'will', 'would', 'could',
+            'should', 'may', 'might', 'can', 'this', 'that', 'these', 'those'
+        }
+        
+        keywords = [word for word in words if word not in common_words and len(word) > 2]
+        
+        # Return unique keywords, limited to 10
+        return list(set(keywords))[:10]
+    
+    def _generate_feedback_template(self, question: Dict) -> str:
+        """Generate a feedback template for a question"""
+        question_type = question.get('type', 'multiple_choice')
+        
+        if question_type == 'multiple_choice':
+            return "Correct answer: {correct_answer}. {explanation}"
+        elif question_type == 'short_answer':
+            return "Key points to include: {keywords}. {explanation}"
+        elif question_type == 'essay':
+            return "Consider these aspects: {keywords}. {explanation}"
+        else:
+            return "Review the key concepts: {keywords}. {explanation}"
     
     def _estimate_cost(self, content: str, question_count: int) -> str:
         """Day 8: Estimate API cost for paid tier"""

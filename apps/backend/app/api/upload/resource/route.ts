@@ -1,10 +1,54 @@
 import { createRouteHandlerClient } from '@supabase/auth-helpers-nextjs';
 import { cookies } from 'next/headers';
 import { NextRequest, NextResponse } from 'next/server';
-
+import { supabaseAdmin } from '../../../../lib/db/supabase';
 
 export async function POST(request: NextRequest) {
     try {
+        const contentType = request.headers.get('content-type') || '';
+
+        // Handle JSON requests (for testing)
+        if (contentType.includes('application/json')) {
+            const body = await request.json();
+            const { title, description, file_url, file_type, user_id } = body;
+
+            if (!title || !file_url || !file_type || !user_id) {
+                return NextResponse.json({
+                    error: 'Missing required fields: title, file_url, file_type, user_id'
+                }, { status: 400 });
+            }
+
+            // Save resource metadata directly
+            const { data: resource, error: dbError } = await supabaseAdmin
+                .from('resources')
+                .insert({
+                    user_id: user_id,
+                    title: title,
+                    description: description || '',
+                    file_url: file_url,
+                    file_type: file_type,
+                    upload_status: 'ready',
+                    created_at: new Date().toISOString(),
+                    updated_at: new Date().toISOString()
+                })
+                .select()
+                .single();
+
+            if (dbError) {
+                console.error('Database error:', dbError);
+                return NextResponse.json({
+                    error: 'Failed to save resource metadata',
+                    details: dbError.message
+                }, { status: 500 });
+            }
+
+            return NextResponse.json({
+                message: 'Resource created successfully',
+                resource: resource
+            });
+        }
+
+        // Handle multipart form data (original file upload)
         const formData = await request.formData();
         const file = formData.get('file') as File;
         const title = formData.get('title') as string || file.name;
@@ -98,12 +142,37 @@ export async function POST(request: NextRequest) {
         return NextResponse.json({
             message: 'File uploaded successfully',
             resource: resource
-        }, { status: 201 });
+        });
 
     } catch (error) {
-        console.error('Server error:', error);
+        console.error('Resource upload error:', error);
         return NextResponse.json({
-            error: 'Internal server error'
+            error: 'Internal server error',
+            details: error instanceof Error ? error.message : String(error)
         }, { status: 500 });
     }
-} 
+}
+
+// Add GET method for testing
+export async function GET(request: NextRequest) {
+    return NextResponse.json({
+        message: "Resource Upload API is running",
+        methods: ["POST"],
+        content_types: ["multipart/form-data", "application/json"],
+        example_json: {
+            title: "Test Document",
+            description: "Test description",
+            file_url: "https://example.com/file.pdf",
+            file_type: "application/pdf",
+            user_id: "user-uuid"
+        }
+    });
+}
+
+
+
+
+
+
+
+
