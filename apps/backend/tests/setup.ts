@@ -14,7 +14,8 @@ global.console = {
     debug: jest.fn(),
     info: jest.fn(),
     warn: jest.fn(),
-    error: jest.fn(),
+    // Keep error logging for debugging
+    error: console.error,
 };
 
 // Global test timeout
