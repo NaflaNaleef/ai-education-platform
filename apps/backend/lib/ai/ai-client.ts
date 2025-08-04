@@ -82,6 +82,14 @@ export class AiServiceClient {
       const result = await response.json();
       console.log(`✅ Content analysis complete: ${result.word_count} words, suitable: ${result.suitable_for_questions}`);
 
+      // Log AI usage for content analysis
+      await this.logAIUsage({
+        service_type: 'content_analysis',
+        tokens_used: result.tokens_used || 0,
+        cost_usd: result.cost_usd || 0,
+        resource_id: request.resource_id
+      });
+
       return result;
     } catch (error) {
       console.error('❌ Content analysis failed:', error);
@@ -113,6 +121,14 @@ export class AiServiceClient {
       }
 
       console.log(`✅ Question generation complete: ${result.total_questions} questions in ${result.generation_time}`);
+
+      // Log AI usage for question generation
+      await this.logAIUsage({
+        service_type: 'question_generation',
+        tokens_used: result.tokens_used || 0,
+        cost_usd: result.cost_usd || 0,
+        question_paper_id: result.question_paper_id
+      });
 
       return result;
     } catch (error) {
@@ -354,6 +370,40 @@ export class AiServiceClient {
     } catch (error) {
       console.error('❌ Failed to check auto-grading availability:', error);
       return false;
+    }
+  }
+
+  // NEW: Log AI usage for tracking and billing
+  async logAIUsage(usageData: {
+    service_type: 'content_analysis' | 'question_generation' | 'auto_grading' | 'marking_scheme';
+    tokens_used: number;
+    cost_usd: number;
+    resource_id?: string;
+    question_paper_id?: string;
+    submission_id?: string;
+  }): Promise<void> {
+    try {
+      // Get current user ID from context (you'll need to pass this from the calling route)
+      const user_id = process.env.SYSTEM_USER_ID || 'system'; // Fallback for system operations
+
+      const response = await fetch('/api/ai/usage', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({
+          user_id,
+          ...usageData,
+          request_id: `req_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`
+        }),
+      });
+
+      if (!response.ok) {
+        console.warn('⚠️ Failed to log AI usage:', response.status);
+      }
+    } catch (error) {
+      console.warn('⚠️ Failed to log AI usage:', error);
+      // Don't throw error - usage logging shouldn't break main functionality
     }
   }
 

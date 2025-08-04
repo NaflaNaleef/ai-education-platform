@@ -75,6 +75,26 @@ export async function POST(request: NextRequest) {
 
         console.log(`✅ Auto-grading complete: ${gradingResult.total_score}/${gradingResult.max_possible_score} (${gradingResult.percentage}%)`);
 
+        // Log AI usage for auto-grading
+        try {
+            await fetch(`${process.env.NEXT_PUBLIC_APP_URL || 'http://localhost:3000'}/api/ai/usage`, {
+                method: 'POST',
+                headers: {
+                    'Content-Type': 'application/json',
+                },
+                body: JSON.stringify({
+                    user_id: user_id,
+                    service_type: 'auto_grading',
+                    tokens_used: (gradingResult as any).tokens_used || 0,
+                    cost_usd: (gradingResult as any).cost_usd || 0,
+                    submission_id: `sub_${Date.now()}`,
+                    question_paper_id: questionPaper.id
+                }),
+            });
+        } catch (usageError) {
+            console.warn('⚠️ Failed to log AI usage for auto-grading:', usageError);
+        }
+
         // Store submission (use assignment_id as per schema)
         const { data: submission, error: subError } = await supabaseAdmin
             .from('submissions')

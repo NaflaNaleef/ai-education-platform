@@ -176,6 +176,26 @@ export async function POST(request: NextRequest) {
 
         console.log(`✅ Generated marking scheme with ${markingSchemeResult.scheme.criteria?.length || 0} criteria`);
 
+        // Log AI usage for marking scheme generation
+        try {
+            await fetch(`${process.env.NEXT_PUBLIC_APP_URL || 'http://localhost:3000'}/api/ai/usage`, {
+                method: 'POST',
+                headers: {
+                    'Content-Type': 'application/json',
+                },
+                body: JSON.stringify({
+                    user_id: user.id,
+                    service_type: 'marking_scheme',
+                    tokens_used: (markingSchemeResult as any).tokens_used || 0,
+                    cost_usd: (markingSchemeResult as any).cost_usd || 0,
+                    question_paper_id: `qp_${Date.now()}`,
+                    resource_id: resource_id
+                }),
+            });
+        } catch (usageError) {
+            console.warn('⚠️ Failed to log AI usage for marking scheme generation:', usageError);
+        }
+
         // Step 6: Calculate total marks and time limit
         const total_marks = questionResult.questions.reduce((sum, q) => {
             return sum + (q.points || q.marks || 2);
