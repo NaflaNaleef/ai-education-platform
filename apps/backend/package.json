@@ -3,6 +3,14 @@
     "version": "1.0.0",
     "scripts": {
         "test": "jest",
+        "test:watch": "jest --watch",
+        "test:coverage": "jest --coverage",
+        "test:verbose": "jest --verbose",
+        "test:ai": "jest tests/ai",
+        "test:auth": "jest tests/auth", 
+        "test:teacher": "jest tests/teacher",
+        "test:student": "jest tests/student",
+        "test:guardian": "jest tests/guardian",
         "dev": "next dev -p 3001",
         "build": "next build"
     },
