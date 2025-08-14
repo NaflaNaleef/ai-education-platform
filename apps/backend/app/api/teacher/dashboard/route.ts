@@ -6,6 +6,11 @@ import { createRouteHandlerClient } from '@supabase/auth-helpers-nextjs';
 import { cookies } from 'next/headers';
 import { supabaseAdmin } from '../../../../lib/db/supabase';
 
+// ✅ UPDATE IN ALL APIs - Replace old UUIDs with these:
+const TEST_TEACHER_ID = '73596418-7572-485a-929d-6f9688cb8a36';
+const TEST_STUDENT_ID = '87654321-4321-4321-4321-210987654321';
+const TEST_CLASS_ID = 'abcdef12-abcd-4321-abcd-123456789abc';
+
 // DASHBOARD API FIX - app/api/teacher/dashboard/route.ts
 // Replace the data aggregation section with this:
 
@@ -44,7 +49,7 @@ export async function GET(request: NextRequest) {
             user = authUser;
             userProfile = userProfileData;
         } else {
-            user = { id: '73596418-7572-485a-929d-6f9688cb8a36' };
+            user = { id: TEST_TEACHER_ID };
             userProfile = { full_name: 'Test Teacher User', role: 'teacher' };
         }
 

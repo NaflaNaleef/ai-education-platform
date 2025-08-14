@@ -1,0 +1,30 @@
+# AI Education Platform - Test Dependencies
+# Install with: pip install -r requirements-test.txt
+
+# Core testing framework
+pytest==7.4.3
+pytest-asyncio==0.21.1
+pytest-mock==3.12.0
+pytest-cov==4.1.0
+pytest-timeout==2.2.0
+
+# AI and ML libraries
+google-generativeai==0.3.2
+
+# HTTP and API testing
+requests==2.31.0
+responses==0.24.1
+
+# Environment and configuration
+python-dotenv==1.0.0
+
+# Data handling
+pandas==2.1.4
+numpy==1.24.3
+
+# Optional: Enhanced reporting
+pytest-html==4.1.1
+pytest-json-report==1.5.0
+
+# Optional: Parallel test execution
+pytest-xdist==3.5.0

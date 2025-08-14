@@ -6,6 +6,21 @@ export async function GET(request: NextRequest) {
     try {
         const supabase = createRouteHandlerClient({ cookies });
 
+        // Type-safe helper for handling Supabase join responses
+        const extractQuestionPaper = (qp: any) => {
+            return Array.isArray(qp) ? qp[0] : qp;
+        };
+
+        const extractTeacherName = (users: any): string => {
+            if (Array.isArray(users) && users.length > 0) {
+                return users[0].full_name || 'Unknown Teacher';
+            }
+            if (users && typeof users === 'object' && 'full_name' in users) {
+                return users.full_name || 'Unknown Teacher';
+            }
+            return 'Unknown Teacher';
+        };
+
         // Get current user (matching your auth pattern)
         const { data: { user }, error: userError } = await supabase.auth.getUser();
 
@@ -26,34 +41,88 @@ export async function GET(request: NextRequest) {
             }, { status: 403 });
         }
 
-        // Get available question papers for this student
-        // In a real app, you'd have assignments/enrollments table
-        // For now, get all published papers from all teachers
-        const { data: availableQuizzes, error: quizzesError } = await supabase
-            .from('question_papers')
-            .select(`
-                id,
-                title,
-                description,
-                total_marks,
-                time_limit,
-                difficulty_level,
-                created_at,
-                status,
-                teacher_id,
-                users!question_papers_teacher_id_fkey(full_name)
-            `)
-            .eq('status', 'published')
-            .order('created_at', { ascending: false });
+        // ✅ FIXED: Get student's enrollments first
+        const { data: enrollments, error: enrollError } = await supabase
+            .from('enrollments')
+            .select('class_id')
+            .eq('student_id', student_id)
+            .eq('status', 'active');
 
-        if (quizzesError) {
-            console.error('Error fetching quizzes:', quizzesError);
-            return NextResponse.json({
-                error: 'Failed to fetch available quizzes'
+        if (enrollError) {
+            console.error('Error fetching enrollments:', enrollError);
+            return NextResponse.json({ 
+                error: 'Failed to fetch enrollments' 
             }, { status: 500 });
         }
 
-        // Get student's submission history
+        const classIds = enrollments?.map(e => e.class_id) || [];
+        console.log(`📚 Student enrolled in ${classIds.length} classes:`, classIds);
+
+        // Handle case where student is not enrolled in any classes
+        if (classIds.length === 0) {
+            console.log('📝 Student not enrolled in any classes');
+            return NextResponse.json({
+                success: true,
+                student_dashboard: {
+                    student_id,
+                    student_name: user.user_metadata?.full_name || user.email,
+                    statistics: {
+                        total_assignments_available: 0,
+                        total_assignments_completed: 0,
+                        assignments_pending: 0,
+                        pending_grading: 0,
+                        average_score: "0%",
+                        last_activity: null
+                    },
+                    available_assignments: [],
+                    recent_submissions: [],
+                    recent_results: [],
+                    message: "You're not enrolled in any classes yet. Contact your teacher to get enrolled."
+                }
+            });
+        }
+
+        // ✅ FIXED: Get assignments from enrolled classes (not all published papers!)
+        const { data: availableAssignments, error: assignmentsError } = await supabase
+            .from('assignments')
+            .select(`
+                id,
+                title,
+                instructions,
+                due_date,
+                max_attempts,
+                status,
+                question_paper_id,
+                class_id,
+                created_at,
+                question_papers!inner(
+                    id,
+                    title,
+                    description,
+                    total_marks,
+                    time_limit,
+                    difficulty_level,
+                    status,
+                    users!question_papers_teacher_id_fkey(full_name)
+                )
+            `)
+            .in('class_id', classIds)
+            .eq('status', 'active')
+            .eq('question_papers.status', 'published')
+            .order('due_date', { ascending: true });
+
+        if (assignmentsError) {
+            console.error('Error fetching assignments:', assignmentsError);
+            return NextResponse.json({
+                error: 'Failed to fetch available assignments'
+            }, { status: 500 });
+        }
+
+        console.log(`🎯 Found ${(availableAssignments || []).length} assignments`);
+
+        // Get student's submission history (updated to work with assignments)
+        const assignmentQuestionPaperIds = (availableAssignments || []).map(a => a.question_paper_id);
+        
         const { data: submissions, error: submissionsError } = await supabase
             .from('submissions')
             .select(`
@@ -66,13 +135,14 @@ export async function GET(request: NextRequest) {
                 results(total_score, percentage, grade, feedback)
             `)
             .eq('student_id', student_id)
+            .in('question_paper_id', assignmentQuestionPaperIds)
             .order('submitted_at', { ascending: false });
 
         if (submissionsError) {
             console.error('Error fetching submissions:', submissionsError);
         }
 
-        // Get recent results (top 5)
+        // Get recent results (updated to work with assignments)
         const { data: recentResults, error: resultsError } = await supabase
             .from('results')
             .select(`
@@ -89,6 +159,7 @@ export async function GET(request: NextRequest) {
                 )
             `)
             .eq('submissions.student_id', student_id)
+            .in('submissions.question_paper_id', assignmentQuestionPaperIds)
             .order('graded_at', { ascending: false })
             .limit(5);
 
@@ -96,77 +167,78 @@ export async function GET(request: NextRequest) {
             console.error('Error fetching recent results:', resultsError);
         }
 
-        // Calculate student statistics
-        const submittedPaperIds = (submissions || []).map(s => s.question_paper_id);
-        const availableNotTaken = (availableQuizzes || []).filter(
-            quiz => !submittedPaperIds.includes(quiz.id)
+        // ✅ FIXED: Calculate statistics based on assignments (not all question papers)
+        const submittedQuestionPaperIds = (submissions || []).map(s => s.question_paper_id);
+        const availableNotTaken = (availableAssignments || []).filter(
+            assignment => !submittedQuestionPaperIds.includes(assignment.question_paper_id)
         );
 
         const averageScore = (recentResults || []).length > 0
             ? (recentResults.reduce((sum, result) => sum + (result.percentage || 0), 0) / recentResults.length).toFixed(1)
             : 0;
 
-        const totalQuizzesCompleted = (submissions || []).length;
+        const totalAssignmentsCompleted = (submissions || []).length;
         const pendingGrading = (submissions || []).filter(s => s.status === 'submitted').length;
 
+        // ✅ FIXED: Return assignments with proper assignment info
         return NextResponse.json({
             success: true,
             student_dashboard: {
                 student_id,
                 student_name: user.user_metadata?.full_name || user.email,
                 statistics: {
-                    total_quizzes_available: (availableQuizzes || []).length,
-                    total_quizzes_completed: totalQuizzesCompleted,
-                    quizzes_pending: availableNotTaken.length,
+                    total_assignments_available: (availableAssignments || []).length,
+                    total_assignments_completed: totalAssignmentsCompleted,
+                    assignments_pending: availableNotTaken.length,
                     pending_grading: pendingGrading,
                     average_score: `${averageScore}%`,
                     last_activity: (submissions || [])[0]?.submitted_at || null
                 },
-                available_quizzes: availableNotTaken.map(quiz => ({
-                    id: quiz.id,
-                    title: quiz.title,
-                    description: quiz.description,
-                    total_marks: quiz.total_marks,
-                    time_limit: quiz.time_limit,
-                    difficulty_level: quiz.difficulty_level,
-                    teacher_name: Array.isArray(quiz.users) && quiz.users.length > 0
-                        ? quiz.users[0].full_name
-                        : (quiz.users && typeof quiz.users === 'object' && 'full_name' in quiz.users ? quiz.users.full_name : 'Unknown Teacher'),
-                    created_at: quiz.created_at,
-                    status: 'available'
-                })),
-                recent_submissions: (submissions || []).slice(0, 5).map(sub => ({
-                    id: sub.id,
-                    quiz_title: Array.isArray(sub.question_papers) && sub.question_papers.length > 0
-                        ? sub.question_papers[0].title
-                        : (sub.question_papers && typeof sub.question_papers === 'object' && 'title' in sub.question_papers ? sub.question_papers.title : undefined),
-                    submitted_at: sub.submitted_at,
-                    time_taken: sub.time_taken,
-                    status: sub.status,
-                    score: sub.results?.[0]?.total_score || null,
-                    percentage: sub.results?.[0]?.percentage || null,
-                    grade: sub.results?.[0]?.grade || null
-                })),
-                recent_results: (recentResults || []).map(result => {
-                    let submissions = result.submissions;
-                    let qpObj;
-                    if (Array.isArray(submissions)) {
-                        if (submissions.length > 0 && typeof submissions[0] === 'object' && !Array.isArray(submissions[0])) {
-                            const qp = submissions[0].question_papers;
-                            qpObj = Array.isArray(qp) && qp.length > 0 ? qp[0] : (typeof qp === 'object' ? qp : undefined);
-                        } else {
-                            qpObj = undefined;
-                        }
-                    } else if (submissions && typeof submissions === 'object') {
-                        const qp = (submissions as { question_papers?: any }).question_papers;
-                        qpObj = Array.isArray(qp) && qp.length > 0 ? qp[0] : (typeof qp === 'object' ? qp : undefined);
-                    } else {
-                        qpObj = undefined;
-                    }
+                // ✅ FIXED: Return assignments with due dates and instructions
+                available_assignments: availableNotTaken.map(assignment => {
+                    const questionPaper = extractQuestionPaper(assignment.question_papers);
+                    const teacherName = extractTeacherName(questionPaper?.users);
+
                     return {
-                        quiz_title: qpObj?.title || undefined,
+                        assignment_id: assignment.id,
+                        assignment_title: assignment.title,
+                        assignment_instructions: assignment.instructions,
+                        due_date: assignment.due_date,
+                        max_attempts: assignment.max_attempts,
+                        // Question paper details
+                        question_paper_id: assignment.question_paper_id,
+                        quiz_title: questionPaper?.title,
+                        description: questionPaper?.description,
+                        total_marks: questionPaper?.total_marks,
+                        time_limit: questionPaper?.time_limit,
+                        difficulty_level: questionPaper?.difficulty_level,
+                        teacher_name: teacherName,
+                        created_at: assignment.created_at,
+                        status: 'available'
+                    };
+                }),
+                recent_submissions: (submissions || []).slice(0, 5).map(sub => {
+                    const questionPaper = extractQuestionPaper(sub.question_papers);
+                    return {
+                        id: sub.id,
+                        quiz_title: questionPaper?.title,
+                        submitted_at: sub.submitted_at,
+                        time_taken: sub.time_taken,
+                        status: sub.status,
+                        score: sub.results?.[0]?.total_score || null,
+                        percentage: sub.results?.[0]?.percentage || null,
+                        grade: sub.results?.[0]?.grade || null
+                    };
+                }),
+                recent_results: (recentResults || []).map(result => {
+                    // Extract submission and question paper data safely
+                    const submission = extractQuestionPaper(result.submissions);
+                    const questionPaper = extractQuestionPaper(submission?.question_papers);
+                    
+                    return {
+                        quiz_title: questionPaper?.title,
                         total_score: result.total_score,
-                        total_marks: qpObj?.total_marks || undefined,
+                        total_marks: questionPaper?.total_marks,
                         percentage: result.percentage,
                         grade: result.grade,
                         graded_at: result.graded_at,
@@ -187,18 +259,25 @@ export async function GET(request: NextRequest) {
 
 export async function OPTIONS() {
     return NextResponse.json({
-        endpoint: 'Student Dashboard',
+        endpoint: 'Student Dashboard (Fixed)',
         methods: ['GET'],
-        description: 'Get student dashboard with available quizzes, statistics, and recent activity',
+        description: 'Get student dashboard with assignments from enrolled classes',
         authentication: 'Required - Supabase Auth',
         query_parameters: {
             student_id: 'Optional - defaults to authenticated user'
         },
         response_includes: [
-            'Available quizzes (not yet taken)',
-            'Student statistics',
-            'Recent submissions',
-            'Recent results'
+            'Assignments from enrolled classes only',
+            'Student statistics based on assignments',
+            'Recent submissions for assignments',
+            'Recent results for assignments',
+            'Assignment details (due dates, instructions, attempts)'
+        ],
+        key_fixes: [
+            'Now checks enrollments before showing assignments',
+            'Shows assignments instead of all published question papers',
+            'Includes assignment-specific data (due dates, instructions)',
+            'Proper error handling for non-enrolled students'
         ]
     });
 }

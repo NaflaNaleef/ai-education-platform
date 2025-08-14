@@ -35,4 +35,4 @@ build/
 *.swp 
 **/.env.local 
 
-apps/backend/ai/.env 
+apps/backend/ai/.env coverage/

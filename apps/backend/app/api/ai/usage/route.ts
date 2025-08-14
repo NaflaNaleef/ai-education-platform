@@ -42,7 +42,7 @@ export async function POST(request: NextRequest) {
         } = await request.json();
 
         // Validation
-        if (!user_id || !service_type || !tokens_used) {
+        if (!user_id || !service_type || tokens_used === undefined || tokens_used === null) {
             return NextResponse.json({
                 success: false,
                 error: 'Missing required fields: user_id, service_type, tokens_used'
