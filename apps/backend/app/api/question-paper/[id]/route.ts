@@ -1,24 +1,19 @@
 // app/api/question-paper/[id]/route.ts
-// CRITICAL: Frontend needs this for individual question paper display
+// REFACTORED: Using centralized auth middleware
 
 import { NextRequest, NextResponse } from 'next/server';
 import { supabaseAdmin } from '../../../../lib/db/supabase';
-import { authMiddleware, requireRole } from '../../../../lib/auth/middleware';
+import { requireTeacherOrStudent, requireTeacher, getCurrentUser } from '../../../../lib/auth/middleware';
 
-export async function GET(
+// ===============================================================================
+// 📄 GET QUESTION PAPER HANDLER
+// ===============================================================================
+async function getQuestionPaperHandler(
     request: NextRequest,
     { params }: { params: { id: string } }
 ) {
-    // Check if this is a test request (bypass auth for testing)
-    const isTestMode = request.headers.get('x-test-mode') === 'true';
-
-    if (!isTestMode) {
-        // --- AUTH ---
-        const authResult = await authMiddleware(request);
-        if (authResult instanceof NextResponse) return authResult;
-    }
-
     try {
+        const user = getCurrentUser(request)!;
         const questionPaperId = params.id;
 
         if (!questionPaperId) {
@@ -28,7 +23,7 @@ export async function GET(
             }, { status: 400 });
         }
 
-        console.log(`🔍 Fetching question paper: ${questionPaperId}`);
+        console.log(`🔍 Fetching question paper: ${questionPaperId} for ${user.role}: ${user.full_name}`);
 
         // Get question paper with related data
         const { data: questionPaper, error } = await supabaseAdmin
@@ -52,20 +47,21 @@ export async function GET(
             .eq('id', questionPaperId)
             .single();
 
-        if (error) {
+        if (error || !questionPaper) {
             console.error('Database error:', error);
             return NextResponse.json({
                 success: false,
                 error: 'Question paper not found',
-                details: error.message
+                details: error?.message
             }, { status: 404 });
         }
 
-        if (!questionPaper) {
+        // Role-based access control
+        if (user.role === 'teacher' && questionPaper.teacher_id !== user.id) {
             return NextResponse.json({
                 success: false,
-                error: 'Question paper not found'
-            }, { status: 404 });
+                error: 'Access denied. You can only view your own question papers.'
+            }, { status: 403 });
         }
 
         console.log(`✅ Question paper found: ${questionPaper.title}`);
@@ -105,6 +101,11 @@ export async function GET(
                 created_at: questionPaper.created_at,
                 updated_at: questionPaper.updated_at,
                 ai_generated_at: questionPaper.ai_generated_at
+            },
+            user: {
+                role: user.role,
+                name: user.full_name,
+                test_mode: user.isTestMode
             }
         });
 
@@ -118,23 +119,31 @@ export async function GET(
     }
 }
 
-// PUT - Update question paper
-export async function PUT(
+// ===============================================================================
+// ✏️ UPDATE QUESTION PAPER HANDLER
+// ===============================================================================
+async function updateQuestionPaperHandler(
     request: NextRequest,
     { params }: { params: { id: string } }
 ) {
-    const isTestMode = request.headers.get('x-test-mode') === 'true';
-
-    if (!isTestMode) {
-        const authResult = await authMiddleware(request);
-        if (authResult instanceof NextResponse) return authResult;
-        const roleResult = requireRole(['teacher'])(request);
-        if (roleResult instanceof NextResponse) return roleResult;
-    }
-
     try {
+        const user = getCurrentUser(request)!;
         const questionPaperId = params.id;
         const updateData = await request.json();
+
+        // Verify ownership
+        const { data: existingPaper, error: ownershipError } = await supabaseAdmin
+            .from('question_papers')
+            .select('teacher_id')
+            .eq('id', questionPaperId)
+            .single();
+
+        if (ownershipError || !existingPaper || existingPaper.teacher_id !== user.id) {
+            return NextResponse.json({
+                success: false,
+                error: 'Question paper not found or access denied'
+            }, { status: 404 });
+        }
 
         // Allowed fields for update
         const allowedFields = [
@@ -166,10 +175,14 @@ export async function PUT(
             }, { status: 500 });
         }
 
+        console.log(`✅ Question paper updated: ${data.title} by ${user.full_name}`);
+
         return NextResponse.json({
             success: true,
             question_paper: data,
-            message: 'Question paper updated successfully'
+            message: 'Question paper updated successfully',
+            updated_by: user.full_name,
+            test_mode: user.isTestMode
         });
 
     } catch (error) {
@@ -181,22 +194,30 @@ export async function PUT(
     }
 }
 
-// DELETE - Delete question paper
-export async function DELETE(
+// ===============================================================================
+// 🗑️ DELETE QUESTION PAPER HANDLER
+// ===============================================================================
+async function deleteQuestionPaperHandler(
     request: NextRequest,
     { params }: { params: { id: string } }
 ) {
-    const isTestMode = request.headers.get('x-test-mode') === 'true';
-
-    if (!isTestMode) {
-        const authResult = await authMiddleware(request);
-        if (authResult instanceof NextResponse) return authResult;
-        const roleResult = requireRole(['teacher'])(request);
-        if (roleResult instanceof NextResponse) return roleResult;
-    }
-
     try {
+        const user = getCurrentUser(request)!;
         const questionPaperId = params.id;
+
+        // Verify ownership
+        const { data: existingPaper, error: ownershipError } = await supabaseAdmin
+            .from('question_papers')
+            .select('teacher_id, title')
+            .eq('id', questionPaperId)
+            .single();
+
+        if (ownershipError || !existingPaper || existingPaper.teacher_id !== user.id) {
+            return NextResponse.json({
+                success: false,
+                error: 'Question paper not found or access denied'
+            }, { status: 404 });
+        }
 
         const { error } = await supabaseAdmin
             .from('question_papers')
@@ -211,9 +232,14 @@ export async function DELETE(
             }, { status: 500 });
         }
 
+        console.log(`✅ Question paper deleted: ${existingPaper.title} by ${user.full_name}`);
+
         return NextResponse.json({
             success: true,
-            message: 'Question paper deleted successfully'
+            message: 'Question paper deleted successfully',
+            deleted_title: existingPaper.title,
+            deleted_by: user.full_name,
+            test_mode: user.isTestMode
         });
 
     } catch (error) {
@@ -224,3 +250,10 @@ export async function DELETE(
         }, { status: 500 });
     }
 }
+
+// ===============================================================================
+// ✅ EXPORT WITH MIDDLEWARE PROTECTION
+// ===============================================================================
+export const GET = requireTeacherOrStudent(getQuestionPaperHandler);
+export const PUT = requireTeacher(updateQuestionPaperHandler);
+export const DELETE = requireTeacher(deleteQuestionPaperHandler);

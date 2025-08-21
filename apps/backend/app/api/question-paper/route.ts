@@ -1,25 +1,22 @@
 // app/api/question-paper/route.ts
-// COMPLETE VERSION - Adds POST method for Day 9
+// REFACTORED: Using centralized auth middleware
 
 import { NextRequest, NextResponse } from 'next/server';
 import { supabaseAdmin } from '../../../lib/db/supabase';
-import { authMiddleware, requireRole, getCurrentUser } from '../../../lib/auth/middleware';
+import { requireTeacherOrStudent, requireTeacher, getCurrentUser } from '../../../lib/auth/middleware';
 
-// GET method (you already have this - retrieve question papers)
-export async function GET(request: NextRequest) {
-    // Check if this is a test request (bypass auth for testing)
-    const isTestMode = request.headers.get('x-test-mode') === 'true';
-
-    if (!isTestMode) {
-        // --- AUTH ---
-        const authResult = await authMiddleware(request);
-        if (authResult instanceof NextResponse) return authResult;
-    }
-
+// ===============================================================================
+// 📋 GET QUESTION PAPERS HANDLER
+// ===============================================================================
+async function getQuestionPapersHandler(request: NextRequest) {
     try {
+        const user = getCurrentUser(request)!;
+        
         const { searchParams } = new URL(request.url);
         const resource_id = searchParams.get('resource_id');
         const teacher_id = searchParams.get('teacher_id');
+
+        console.log(`📋 Getting question papers for ${user.role}: ${user.full_name}`);
 
         if (!resource_id && !teacher_id) {
             return NextResponse.json({
@@ -39,6 +36,13 @@ export async function GET(request: NextRequest) {
         if (resource_id) query = query.eq('resource_id', resource_id);
         if (teacher_id) query = query.eq('teacher_id', teacher_id);
 
+        // Role-based filtering
+        if (user.role === 'teacher') {
+            query = query.eq('teacher_id', user.id);
+        } else if (user.role === 'student') {
+            query = query.eq('status', 'published');
+        }
+
         const { data, error } = await query.order('created_at', { ascending: false });
 
         if (error) {
@@ -48,9 +52,16 @@ export async function GET(request: NextRequest) {
             }, { status: 500 });
         }
 
+        console.log(`✅ Found ${data?.length || 0} question papers for ${user.role}`);
+
         return NextResponse.json({
             success: true,
-            question_papers: data || []
+            question_papers: data || [],
+            user: {
+                role: user.role,
+                name: user.full_name,
+                test_mode: user.isTestMode
+            }
         });
 
     } catch (error) {
@@ -62,23 +73,17 @@ export async function GET(request: NextRequest) {
     }
 }
 
-// POST method (NEW - Day 9 functionality)
-export async function POST(request: NextRequest) {
-    // Check if this is a test request (bypass auth for testing)
-    const isTestMode = request.headers.get('x-test-mode') === 'true';
-
-    if (!isTestMode) {
-        // --- AUTH ---
-        const authResult = await authMiddleware(request);
-        if (authResult instanceof NextResponse) return authResult;
-        const roleResult = requireRole(['teacher'])(request);
-        if (roleResult instanceof NextResponse) return roleResult;
-    }
-
+// ===============================================================================
+// 📝 CREATE QUESTION PAPER HANDLER
+// ===============================================================================
+async function createQuestionPaperHandler(request: NextRequest) {
     try {
+        const user = getCurrentUser(request)!;
+        console.log(`📝 Creating question paper for teacher: ${user.full_name}`);
+
         const {
             resource_id,
-            teacher_id,
+            teacher_id = user.id,
             title,
             description,
             questions,
@@ -88,10 +93,10 @@ export async function POST(request: NextRequest) {
         } = await request.json();
 
         // Validation
-        if (!resource_id || !teacher_id || !title || !questions) {
+        if (!resource_id || !title || !questions) {
             return NextResponse.json({
                 success: false,
-                error: 'Missing required fields: resource_id, teacher_id, title, questions'
+                error: 'Missing required fields: resource_id, title, questions'
             }, { status: 400 });
         }
 
@@ -100,6 +105,14 @@ export async function POST(request: NextRequest) {
                 success: false,
                 error: 'Questions must be a non-empty array'
             }, { status: 400 });
+        }
+
+        // Ensure teacher can only create for themselves
+        if (teacher_id !== user.id) {
+            return NextResponse.json({
+                success: false,
+                error: 'Access denied. You can only create question papers for yourself.'
+            }, { status: 403 });
         }
 
         console.log(`📝 Creating question paper: ${title} with ${questions.length} questions`);
@@ -115,7 +128,7 @@ export async function POST(request: NextRequest) {
             finalMarkingScheme = {
                 total_points: total_marks,
                 total_questions: questions.length,
-                time_limit_minutes: time_limit || (questions.length * 3), // 3 minutes per question default
+                time_limit_minutes: time_limit || (questions.length * 3),
                 question_breakdown: {
                     multiple_choice: questions.filter(q => q.type === 'multiple_choice').length,
                     short_answer: questions.filter(q => q.type === 'short_answer').length,
@@ -129,32 +142,20 @@ export async function POST(request: NextRequest) {
             };
         }
 
-        // Verify resource exists
+        // Verify resource exists and user owns it
         const { data: resource, error: resourceError } = await supabaseAdmin
             .from('resources')
-            .select('id, title')
+            .select('id, title, user_id')
             .eq('id', resource_id)
+            .eq('user_id', user.id)
             .single();
 
         if (resourceError || !resource) {
             return NextResponse.json({
                 success: false,
-                error: 'Resource not found',
+                error: 'Resource not found or access denied',
                 resource_id: resource_id
             }, { status: 404 });
-        }
-
-        // Verify teacher exists (optional - you might want to skip this check)
-        const { data: teacher, error: teacherError } = await supabaseAdmin
-            .from('users')
-            .select('id, full_name, role')
-            .eq('id', teacher_id)
-            .single();
-
-        if (teacherError || !teacher) {
-            console.log(`⚠️ Teacher not found: ${teacher_id}, proceeding anyway`);
-        } else if (teacher.role !== 'teacher') {
-            console.log(`⚠️ User ${teacher_id} is not a teacher, role: ${teacher.role}`);
         }
 
         // Insert question paper
@@ -162,15 +163,15 @@ export async function POST(request: NextRequest) {
             .from('question_papers')
             .insert({
                 resource_id,
-                teacher_id,
+                teacher_id: user.id,
                 title,
                 description: description || '',
-                content: questions, // Store questions in content field (matches your schema)
+                content: questions,
                 marking_scheme: finalMarkingScheme,
                 total_marks,
                 time_limit: time_limit || (questions.length * 3),
                 difficulty_level,
-                status: 'draft', // Default to draft
+                status: 'draft',
                 ai_generated_at: new Date().toISOString(),
                 created_at: new Date().toISOString(),
                 updated_at: new Date().toISOString()
@@ -204,9 +205,11 @@ export async function POST(request: NextRequest) {
                 status: questionPaper.status,
                 created_at: questionPaper.created_at,
                 resource_title: resource.title,
-                teacher_name: teacher?.full_name || 'Unknown'
+                teacher_name: user.full_name
             },
-            message: 'Question paper created successfully'
+            message: 'Question paper created successfully',
+            created_by: user.full_name,
+            test_mode: user.isTestMode
         });
 
     } catch (error) {
@@ -219,15 +222,13 @@ export async function POST(request: NextRequest) {
     }
 }
 
-// PUT method (Optional - for updating question papers)
-export async function PUT(request: NextRequest) {
-    // --- AUTH ---
-    const authResult = await authMiddleware(request);
-    if (authResult instanceof NextResponse) return authResult;
-    const roleResult = requireRole(['teacher'])(request);
-    if (roleResult instanceof NextResponse) return roleResult;
-
+// ===============================================================================
+// ✏️ UPDATE QUESTION PAPER HANDLER
+// ===============================================================================
+async function updateQuestionPaperHandler(request: NextRequest) {
     try {
+        const user = getCurrentUser(request)!;
+        
         const { searchParams } = new URL(request.url);
         const questionPaperId = searchParams.get('id');
 
@@ -239,6 +240,20 @@ export async function PUT(request: NextRequest) {
         }
 
         const updateData = await request.json();
+
+        // Verify ownership
+        const { data: existingPaper, error: ownershipError } = await supabaseAdmin
+            .from('question_papers')
+            .select('teacher_id')
+            .eq('id', questionPaperId)
+            .single();
+
+        if (ownershipError || !existingPaper || existingPaper.teacher_id !== user.id) {
+            return NextResponse.json({
+                success: false,
+                error: 'Question paper not found or access denied'
+            }, { status: 404 });
+        }
 
         // Remove fields that shouldn't be updated
         const allowedFields = [
@@ -270,10 +285,14 @@ export async function PUT(request: NextRequest) {
             }, { status: 500 });
         }
 
+        console.log(`✅ Question paper updated: ${data.title} by ${user.full_name}`);
+
         return NextResponse.json({
             success: true,
             question_paper: data,
-            message: 'Question paper updated successfully'
+            message: 'Question paper updated successfully',
+            updated_by: user.full_name,
+            test_mode: user.isTestMode
         });
 
     } catch (error) {
@@ -286,15 +305,13 @@ export async function PUT(request: NextRequest) {
     }
 }
 
-// DELETE method (Optional - for deleting question papers)
-export async function DELETE(request: NextRequest) {
-    // --- AUTH ---
-    const authResult = await authMiddleware(request);
-    if (authResult instanceof NextResponse) return authResult;
-    const roleResult = requireRole(['teacher'])(request);
-    if (roleResult instanceof NextResponse) return roleResult;
-
+// ===============================================================================
+// 🗑️ DELETE QUESTION PAPER HANDLER
+// ===============================================================================
+async function deleteQuestionPaperHandler(request: NextRequest) {
     try {
+        const user = getCurrentUser(request)!;
+        
         const { searchParams } = new URL(request.url);
         const questionPaperId = searchParams.get('id');
 
@@ -303,6 +320,20 @@ export async function DELETE(request: NextRequest) {
                 success: false,
                 error: 'Question paper ID is required'
             }, { status: 400 });
+        }
+
+        // Verify ownership
+        const { data: existingPaper, error: ownershipError } = await supabaseAdmin
+            .from('question_papers')
+            .select('teacher_id, title')
+            .eq('id', questionPaperId)
+            .single();
+
+        if (ownershipError || !existingPaper || existingPaper.teacher_id !== user.id) {
+            return NextResponse.json({
+                success: false,
+                error: 'Question paper not found or access denied'
+            }, { status: 404 });
         }
 
         const { error } = await supabaseAdmin
@@ -318,9 +349,14 @@ export async function DELETE(request: NextRequest) {
             }, { status: 500 });
         }
 
+        console.log(`✅ Question paper deleted: ${existingPaper.title} by ${user.full_name}`);
+
         return NextResponse.json({
             success: true,
-            message: 'Question paper deleted successfully'
+            message: 'Question paper deleted successfully',
+            deleted_title: existingPaper.title,
+            deleted_by: user.full_name,
+            test_mode: user.isTestMode
         });
 
     } catch (error) {
@@ -332,3 +368,11 @@ export async function DELETE(request: NextRequest) {
         }, { status: 500 });
     }
 }
+
+// ===============================================================================
+// ✅ EXPORT WITH MIDDLEWARE PROTECTION
+// ===============================================================================
+export const GET = requireTeacherOrStudent(getQuestionPapersHandler);
+export const POST = requireTeacher(createQuestionPaperHandler);
+export const PUT = requireTeacher(updateQuestionPaperHandler);
+export const DELETE = requireTeacher(deleteQuestionPaperHandler);
