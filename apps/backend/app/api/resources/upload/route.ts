@@ -1,79 +1,23 @@
 // app/api/resources/upload/route.ts
-// PRODUCTION SAFE - Gracefully handles missing Clerk, works with real AI
+// REFACTORED: Using centralized auth middleware
 
 import { createRouteHandlerClient } from '@supabase/auth-helpers-nextjs';
 import { cookies } from 'next/headers';
 import { NextRequest, NextResponse } from 'next/server';
 import { supabaseAdmin } from '../../../../lib/db/supabase';
+import { requireTeacher, getCurrentUser } from '../../../../lib/auth/middleware';
 
-// ✅ UPDATE IN ALL APIs - Replace old UUIDs with these:
-const TEST_TEACHER_ID = '73596418-7572-485a-929d-6f9688cb8a36';
-const TEST_STUDENT_ID = '87654321-4321-4321-4321-210987654321';
-const TEST_CLASS_ID = 'abcdef12-abcd-4321-abcd-123456789abc';
-
-// Helper function to safely check if Clerk is available
-function isClerkAvailable() {
-    return !!(process.env.NEXT_PUBLIC_CLERK_PUBLISHABLE_KEY && process.env.CLERK_SECRET_KEY);
-}
-
-// Helper function to get authenticated user
-async function getAuthenticatedUser(request: NextRequest) {
-    const isTestMode = process.env.NODE_ENV !== 'production' &&
-        (request.headers.get('x-test-mode') === 'true' || !isClerkAvailable());
-
-    if (isTestMode) {
-        return {
-            user: { id: TEST_TEACHER_ID },
-            userProfile: { full_name: 'Test Teacher User', role: 'teacher' },
-            isTestMode: true
-        };
-    }
-
+// ===============================================================================
+// 📁 UPLOAD RESOURCE HANDLER
+// ===============================================================================
+async function uploadResourceHandler(request: NextRequest) {
     try {
-        const supabase = createRouteHandlerClient({ cookies });
-        const { data: { user }, error: userError } = await supabase.auth.getUser();
-
-        if (userError || !user) {
-            return { error: 'Unauthorized', status: 401 };
-        }
-
-        const { data: userProfile, error: profileError } = await supabase
-            .from('users')
-            .select('role, full_name')
-            .eq('id', user.id)
-            .single();
-
-        if (profileError || !userProfile) {
-            return { error: 'User profile not found', status: 403 };
-        }
-
-        return { user, userProfile, isTestMode: false };
-    } catch (error) {
-        console.warn('Auth check failed, falling back to test mode:', error);
-        return {
-            user: { id: TEST_TEACHER_ID },
-            userProfile: { full_name: 'Test Teacher User', role: 'teacher' },
-            isTestMode: true
-        };
-    }
-}
-
-export async function POST(request: NextRequest) {
-    try {
-        console.log('📁 Starting resource upload...');
-
-        // ✅ SMART AUTHENTICATION
-        const authResult = await getAuthenticatedUser(request);
-        if (authResult.error) {
-            return NextResponse.json({ error: authResult.error }, { status: authResult.status });
-        }
-
-        const { user, userProfile, isTestMode } = authResult;
-        console.log(`${isTestMode ? '🧪' : '🔐'} Authentication: ${isTestMode ? 'Test Mode' : 'Production'}`);
+        const user = getCurrentUser(request)!;
+        console.log(`📁 Starting resource upload for ${user.full_name}`);
 
         const contentType = request.headers.get('content-type') || '';
 
-        // ✅ HANDLE JSON REQUESTS (for testing/API integration)
+        // Handle JSON requests (for testing/API integration)
         if (contentType.includes('application/json')) {
             const body = await request.json();
             const { title, description, file_url, file_type, subject, grade_level } = body;
@@ -95,7 +39,7 @@ export async function POST(request: NextRequest) {
                     grade_level: grade_level || 'Mixed',
                     file_url: file_url,
                     file_type: file_type,
-                    file_size: 0, // Unknown for JSON uploads
+                    file_size: 0,
                     upload_status: 'ready',
                     created_at: new Date().toISOString(),
                     updated_at: new Date().toISOString()
@@ -111,7 +55,7 @@ export async function POST(request: NextRequest) {
                 }, { status: 500 });
             }
 
-            console.log(`✅ Resource created via JSON: ${resource.title}`);
+            console.log(`✅ Resource created via JSON: ${resource.title} by ${user.full_name}`);
 
             return NextResponse.json({
                 success: true,
@@ -126,13 +70,12 @@ export async function POST(request: NextRequest) {
                     upload_status: resource.upload_status,
                     created_at: resource.created_at
                 },
-                environment: process.env.NODE_ENV,
-                test_mode: isTestMode,
-                clerk_available: isClerkAvailable()
+                uploaded_by: user.full_name,
+                test_mode: user.isTestMode
             });
         }
 
-        // ✅ HANDLE MULTIPART FORM DATA (actual file uploads)
+        // Handle multipart form data (actual file uploads)
         const formData = await request.formData();
         const file = formData.get('file') as File;
         const title = formData.get('title') as string || file?.name || 'Untitled Resource';
@@ -147,7 +90,7 @@ export async function POST(request: NextRequest) {
             }, { status: 400 });
         }
 
-        // ✅ FILE VALIDATION
+        // File validation
         const allowedTypes = [
             'application/pdf',
             'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
@@ -174,11 +117,11 @@ export async function POST(request: NextRequest) {
             }, { status: 400 });
         }
 
-        // ✅ FILE UPLOAD TO STORAGE
+        // File upload to storage
         let fileUrl = '';
         let filePath = '';
 
-        if (!isTestMode) {
+        if (!user.isTestMode) {
             // Production: Upload to Supabase Storage
             const supabase = createRouteHandlerClient({ cookies });
 
@@ -214,7 +157,7 @@ export async function POST(request: NextRequest) {
             console.log('🧪 Mock file upload - not actually uploading in test mode');
         }
 
-        // ✅ SAVE METADATA TO DATABASE
+        // Save metadata to database
         const { data: resource, error: dbError } = await supabaseAdmin
             .from('resources')
             .insert({
@@ -238,7 +181,7 @@ export async function POST(request: NextRequest) {
             console.error('Database error:', dbError);
 
             // Cleanup file if database save fails
-            if (!isTestMode && filePath) {
+            if (!user.isTestMode && filePath) {
                 try {
                     const supabase = createRouteHandlerClient({ cookies });
                     await supabase.storage.from('resources').remove([filePath]);
@@ -253,7 +196,7 @@ export async function POST(request: NextRequest) {
             }, { status: 500 });
         }
 
-        console.log(`✅ File uploaded successfully: ${resource.title} (${Math.round(file.size / 1024)}KB)`);
+        console.log(`✅ File uploaded successfully: ${resource.title} (${Math.round(file.size / 1024)}KB) by ${user.full_name}`);
 
         return NextResponse.json({
             success: true,
@@ -269,9 +212,8 @@ export async function POST(request: NextRequest) {
                 upload_status: resource.upload_status,
                 created_at: resource.created_at
             },
-            environment: process.env.NODE_ENV,
-            test_mode: isTestMode,
-            clerk_available: isClerkAvailable()
+            uploaded_by: user.full_name,
+            test_mode: user.isTestMode
         });
 
     } catch (error) {
@@ -284,16 +226,19 @@ export async function POST(request: NextRequest) {
     }
 }
 
-export async function GET(request: NextRequest) {
-    const authResult = await getAuthenticatedUser(request);
-    const isTestMode = authResult.isTestMode || false;
+// ===============================================================================
+// 📋 GET UPLOAD INFO HANDLER
+// ===============================================================================
+async function getUploadInfoHandler(request: NextRequest) {
+    const user = getCurrentUser(request);
 
     return NextResponse.json({
         message: "Resource Upload API is running",
-        environment: process.env.NODE_ENV,
-        test_mode: isTestMode,
-        clerk_available: isClerkAvailable(),
-        clerk_status: isClerkAvailable() ? "✅ Ready" : "⚠️ Not configured (using test mode)",
+        user: user ? {
+            name: user.full_name,
+            role: user.role,
+            test_mode: user.isTestMode
+        } : null,
         methods: ["POST"],
         content_types: ["multipart/form-data", "application/json"],
 
@@ -321,3 +266,9 @@ export async function GET(request: NextRequest) {
         }
     });
 }
+
+// ===============================================================================
+// ✅ EXPORT WITH MIDDLEWARE PROTECTION
+// ===============================================================================
+export const POST = requireTeacher(uploadResourceHandler);
+export const GET = getUploadInfoHandler;

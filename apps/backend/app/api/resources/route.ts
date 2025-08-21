@@ -1,77 +1,21 @@
 // app/api/resources/route.ts
-// PRODUCTION SAFE - Graceful Clerk handling, works in test and production
+// REFACTORED: Using centralized auth middleware
 
 import { createRouteHandlerClient } from '@supabase/auth-helpers-nextjs';
 import { cookies } from 'next/headers';
 import { NextRequest, NextResponse } from 'next/server';
 import { supabaseAdmin } from '../../../lib/db/supabase';
+import { requireTeacher, getCurrentUser } from '../../../lib/auth/middleware';
 
-// ✅ UPDATE IN ALL APIs - Replace old UUIDs with these:
-const TEST_TEACHER_ID = '73596418-7572-485a-929d-6f9688cb8a36';
-const TEST_STUDENT_ID = '87654321-4321-4321-4321-210987654321';
-const TEST_CLASS_ID = 'abcdef12-abcd-4321-abcd-123456789abc';
-
-// Helper function to safely check if Clerk is available
-function isClerkAvailable() {
-    return !!(process.env.NEXT_PUBLIC_CLERK_PUBLISHABLE_KEY && process.env.CLERK_SECRET_KEY);
-}
-
-// Helper function to get authenticated user
-async function getAuthenticatedUser(request: NextRequest) {
-    const isTestMode = process.env.NODE_ENV !== 'production' &&
-        (request.headers.get('x-test-mode') === 'true' || !isClerkAvailable());
-
-    if (isTestMode) {
-        return {
-            user: { id: TEST_TEACHER_ID },
-            userProfile: { full_name: 'Test Teacher User', role: 'teacher' },
-            isTestMode: true
-        };
-    }
-
+// ===============================================================================
+// 📚 GET RESOURCES HANDLER
+// ===============================================================================
+async function getResourcesHandler(request: NextRequest) {
     try {
-        const supabase = createRouteHandlerClient({ cookies });
-        const { data: { user }, error: userError } = await supabase.auth.getUser();
+        const user = getCurrentUser(request)!;
+        console.log(`📚 Loading resources for ${user.full_name}`);
 
-        if (userError || !user) {
-            return { error: 'Unauthorized', status: 401 };
-        }
-
-        const { data: userProfile, error: profileError } = await supabase
-            .from('users')
-            .select('role, full_name')
-            .eq('id', user.id)
-            .single();
-
-        if (profileError || !userProfile) {
-            return { error: 'User profile not found', status: 403 };
-        }
-
-        return { user, userProfile, isTestMode: false };
-    } catch (error) {
-        console.warn('Auth check failed, falling back to test mode:', error);
-        return {
-            user: { id: TEST_TEACHER_ID },
-            userProfile: { full_name: 'Test Teacher User', role: 'teacher' },
-            isTestMode: true
-        };
-    }
-}
-
-// ✅ GET - List user's resources with filtering
-export async function GET(request: NextRequest) {
-    try {
-        console.log('📚 Loading user resources...');
-
-        const authResult = await getAuthenticatedUser(request);
-        if (authResult.error) {
-            return NextResponse.json({ error: authResult.error }, { status: authResult.status });
-        }
-
-        const { user, isTestMode } = authResult;
-        console.log(`${isTestMode ? '🧪' : '🔐'} Loading resources for user: ${user.id}`);
-
-        // ✅ PARSE QUERY PARAMETERS
+        // Parse query parameters
         const { searchParams } = new URL(request.url);
         const subject = searchParams.get('subject');
         const file_type = searchParams.get('file_type');
@@ -80,7 +24,7 @@ export async function GET(request: NextRequest) {
         const limit = parseInt(searchParams.get('limit') || '50');
         const offset = parseInt(searchParams.get('offset') || '0');
 
-        // ✅ BUILD QUERY WITH FILTERS
+        // Build query with filters
         let query = supabaseAdmin
             .from('resources')
             .select('*', { count: 'exact' })
@@ -113,7 +57,7 @@ export async function GET(request: NextRequest) {
             }, { status: 500 });
         }
 
-        // ✅ CALCULATE SUMMARY STATISTICS
+        // Calculate summary statistics
         const { data: allUserResources } = await supabaseAdmin
             .from('resources')
             .select('subject, file_type, file_size, analyzed_at, grade_level')
@@ -137,7 +81,7 @@ export async function GET(request: NextRequest) {
             return parseFloat((bytes / Math.pow(k, i)).toFixed(2)) + ' ' + sizes[i];
         };
 
-        // ✅ FORMAT RESPONSE DATA
+        // Format response data
         const formattedResources = resources?.map(resource => ({
             id: resource.id,
             title: resource.title,
@@ -158,7 +102,7 @@ export async function GET(request: NextRequest) {
             has_analysis: !!resource.analysis_result
         })) || [];
 
-        console.log(`✅ Resources loaded: ${formattedResources.length} of ${count} total`);
+        console.log(`✅ Resources loaded: ${formattedResources.length} of ${count} total for ${user.full_name}`);
 
         return NextResponse.json({
             success: true,
@@ -186,9 +130,10 @@ export async function GET(request: NextRequest) {
                 grade_level,
                 search
             },
-            environment: process.env.NODE_ENV,
-            test_mode: isTestMode,
-            clerk_available: isClerkAvailable(),
+            user: {
+                name: user.full_name,
+                test_mode: user.isTestMode
+            },
             timestamp: new Date().toISOString()
         });
 
@@ -203,19 +148,15 @@ export async function GET(request: NextRequest) {
     }
 }
 
-// ✅ DELETE - Delete resource and its file
-export async function DELETE(request: NextRequest) {
+// ===============================================================================
+// 🗑️ DELETE RESOURCE HANDLER
+// ===============================================================================
+async function deleteResourceHandler(request: NextRequest) {
     try {
-        console.log('🗑️ Deleting resource...');
+        const user = getCurrentUser(request)!;
+        console.log(`🗑️ Deleting resource for ${user.full_name}`);
 
-        const authResult = await getAuthenticatedUser(request);
-        if (authResult.error) {
-            return NextResponse.json({ error: authResult.error }, { status: authResult.status });
-        }
-
-        const { user, isTestMode } = authResult;
-
-        // ✅ GET RESOURCE ID FROM QUERY OR BODY
+        // Get resource ID from query or body
         const { searchParams } = new URL(request.url);
         let resourceId = searchParams.get('id');
 
@@ -235,7 +176,7 @@ export async function DELETE(request: NextRequest) {
             }, { status: 400 });
         }
 
-        // ✅ GET RESOURCE TO VERIFY OWNERSHIP AND GET FILE PATH
+        // Get resource to verify ownership and get file path
         const { data: resource, error: fetchError } = await supabaseAdmin
             .from('resources')
             .select('id, title, file_path, file_url')
@@ -250,8 +191,8 @@ export async function DELETE(request: NextRequest) {
             }, { status: 404 });
         }
 
-        // ✅ DELETE FILE FROM STORAGE
-        if (!isTestMode && resource.file_path) {
+        // Delete file from storage
+        if (!user.isTestMode && resource.file_path) {
             try {
                 const supabase = createRouteHandlerClient({ cookies });
                 const { error: storageError } = await supabase.storage
@@ -265,11 +206,11 @@ export async function DELETE(request: NextRequest) {
             } catch (storageError) {
                 console.warn('Storage deletion failed:', storageError);
             }
-        } else if (isTestMode) {
+        } else if (user.isTestMode) {
             console.log('🧪 Mock file deletion - not actually deleting from storage');
         }
 
-        // ✅ DELETE RESOURCE RECORD FROM DATABASE
+        // Delete resource record from database
         const { error: deleteError } = await supabaseAdmin
             .from('resources')
             .delete()
@@ -284,7 +225,7 @@ export async function DELETE(request: NextRequest) {
             }, { status: 500 });
         }
 
-        console.log(`✅ Resource deleted: ${resource.title}`);
+        console.log(`✅ Resource deleted: ${resource.title} by ${user.full_name}`);
 
         return NextResponse.json({
             success: true,
@@ -293,9 +234,8 @@ export async function DELETE(request: NextRequest) {
                 id: resource.id,
                 title: resource.title
             },
-            environment: process.env.NODE_ENV,
-            test_mode: isTestMode,
-            clerk_available: isClerkAvailable()
+            deleted_by: user.full_name,
+            test_mode: user.isTestMode
         });
 
     } catch (error) {
@@ -308,3 +248,9 @@ export async function DELETE(request: NextRequest) {
         }, { status: 500 });
     }
 }
+
+// ===============================================================================
+// ✅ EXPORT WITH MIDDLEWARE PROTECTION
+// ===============================================================================
+export const GET = requireTeacher(getResourcesHandler);
+export const DELETE = requireTeacher(deleteResourceHandler);
