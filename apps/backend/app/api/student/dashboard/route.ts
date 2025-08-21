@@ -1,10 +1,28 @@
-import { createRouteHandlerClient } from '@supabase/auth-helpers-nextjs';
-import { cookies } from 'next/headers';
-import { NextRequest, NextResponse } from 'next/server';
+// app/api/student/dashboard/route.ts
+// REFACTORED: Using centralized auth middleware
 
-export async function GET(request: NextRequest) {
+import { NextRequest, NextResponse } from 'next/server';
+import { supabaseAdmin } from '../../../../lib/db/supabase';
+import { requireStudent, getCurrentUser } from '../../../../lib/auth/middleware';
+
+// ===============================================================================
+// 📊 GET STUDENT DASHBOARD HANDLER
+// ===============================================================================
+async function getStudentDashboardHandler(request: NextRequest) {
     try {
-        const supabase = createRouteHandlerClient({ cookies });
+        const user = getCurrentUser(request)!;
+
+        const { searchParams } = new URL(request.url);
+        const student_id = searchParams.get('student_id') || user.id;
+
+        console.log(`📊 Getting dashboard for student: ${user.full_name}`);
+
+        // Verify user can access this student's data (must be same user)
+        if (student_id !== user.id) {
+            return NextResponse.json({
+                error: 'Access denied - can only view your own dashboard'
+            }, { status: 403 });
+        }
 
         // Type-safe helper for handling Supabase join responses
         const extractQuestionPaper = (qp: any) => {
@@ -21,28 +39,8 @@ export async function GET(request: NextRequest) {
             return 'Unknown Teacher';
         };
 
-        // Get current user (matching your auth pattern)
-        const { data: { user }, error: userError } = await supabase.auth.getUser();
-
-        if (userError || !user) {
-            return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
-        }
-
-        const { searchParams } = new URL(request.url);
-        const student_id = searchParams.get('student_id') || user.id;
-
-        console.log(`📊 Getting dashboard for student: ${student_id}`);
-
-        // Verify user can access this student's data (must be same user or admin)
-        if (student_id !== user.id) {
-            // Could add admin role check here later
-            return NextResponse.json({
-                error: 'Access denied - can only view your own dashboard'
-            }, { status: 403 });
-        }
-
-        // ✅ FIXED: Get student's enrollments first
-        const { data: enrollments, error: enrollError } = await supabase
+        // Get student's enrollments first
+        const { data: enrollments, error: enrollError } = await supabaseAdmin
             .from('enrollments')
             .select('class_id')
             .eq('student_id', student_id)
@@ -56,7 +54,7 @@ export async function GET(request: NextRequest) {
         }
 
         const classIds = enrollments?.map(e => e.class_id) || [];
-        console.log(`📚 Student enrolled in ${classIds.length} classes:`, classIds);
+        console.log(`📚 Student ${user.full_name} enrolled in ${classIds.length} classes:`, classIds);
 
         // Handle case where student is not enrolled in any classes
         if (classIds.length === 0) {
@@ -65,7 +63,7 @@ export async function GET(request: NextRequest) {
                 success: true,
                 student_dashboard: {
                     student_id,
-                    student_name: user.user_metadata?.full_name || user.email,
+                    student_name: user.full_name,
                     statistics: {
                         total_assignments_available: 0,
                         total_assignments_completed: 0,
@@ -78,12 +76,16 @@ export async function GET(request: NextRequest) {
                     recent_submissions: [],
                     recent_results: [],
                     message: "You're not enrolled in any classes yet. Contact your teacher to get enrolled."
+                },
+                student: {
+                    name: user.full_name,
+                    test_mode: user.isTestMode
                 }
             });
         }
 
-        // ✅ FIXED: Get assignments from enrolled classes (not all published papers!)
-        const { data: availableAssignments, error: assignmentsError } = await supabase
+        // Get assignments from enrolled classes (not all published papers!)
+        const { data: availableAssignments, error: assignmentsError } = await supabaseAdmin
             .from('assignments')
             .select(`
                 id,
@@ -118,12 +120,12 @@ export async function GET(request: NextRequest) {
             }, { status: 500 });
         }
 
-        console.log(`🎯 Found ${(availableAssignments || []).length} assignments`);
+        console.log(`🎯 Found ${(availableAssignments || []).length} assignments for ${user.full_name}`);
 
         // Get student's submission history (updated to work with assignments)
         const assignmentQuestionPaperIds = (availableAssignments || []).map(a => a.question_paper_id);
         
-        const { data: submissions, error: submissionsError } = await supabase
+        const { data: submissions, error: submissionsError } = await supabaseAdmin
             .from('submissions')
             .select(`
                 id,
@@ -143,7 +145,7 @@ export async function GET(request: NextRequest) {
         }
 
         // Get recent results (updated to work with assignments)
-        const { data: recentResults, error: resultsError } = await supabase
+        const { data: recentResults, error: resultsError } = await supabaseAdmin
             .from('results')
             .select(`
                 id,
@@ -167,7 +169,7 @@ export async function GET(request: NextRequest) {
             console.error('Error fetching recent results:', resultsError);
         }
 
-        // ✅ FIXED: Calculate statistics based on assignments (not all question papers)
+        // Calculate statistics based on assignments (not all question papers)
         const submittedQuestionPaperIds = (submissions || []).map(s => s.question_paper_id);
         const availableNotTaken = (availableAssignments || []).filter(
             assignment => !submittedQuestionPaperIds.includes(assignment.question_paper_id)
@@ -180,12 +182,14 @@ export async function GET(request: NextRequest) {
         const totalAssignmentsCompleted = (submissions || []).length;
         const pendingGrading = (submissions || []).filter(s => s.status === 'submitted').length;
 
-        // ✅ FIXED: Return assignments with proper assignment info
+        console.log(`✅ Dashboard loaded for ${user.full_name}: ${(availableAssignments || []).length} assignments available, ${totalAssignmentsCompleted} completed`);
+
+        // Return assignments with proper assignment info
         return NextResponse.json({
             success: true,
             student_dashboard: {
                 student_id,
-                student_name: user.user_metadata?.full_name || user.email,
+                student_name: user.full_name,
                 statistics: {
                     total_assignments_available: (availableAssignments || []).length,
                     total_assignments_completed: totalAssignmentsCompleted,
@@ -194,7 +198,7 @@ export async function GET(request: NextRequest) {
                     average_score: `${averageScore}%`,
                     last_activity: (submissions || [])[0]?.submitted_at || null
                 },
-                // ✅ FIXED: Return assignments with due dates and instructions
+                // Return assignments with due dates and instructions
                 available_assignments: availableNotTaken.map(assignment => {
                     const questionPaper = extractQuestionPaper(assignment.question_papers);
                     const teacherName = extractTeacherName(questionPaper?.users);
@@ -245,6 +249,10 @@ export async function GET(request: NextRequest) {
                         has_feedback: !!result.feedback
                     };
                 })
+            },
+            student: {
+                name: user.full_name,
+                test_mode: user.isTestMode
             }
         });
 
@@ -257,12 +265,15 @@ export async function GET(request: NextRequest) {
     }
 }
 
-export async function OPTIONS() {
+// ===============================================================================
+// 📋 GET OPTIONS INFO HANDLER
+// ===============================================================================
+function getOptionsHandler() {
     return NextResponse.json({
-        endpoint: 'Student Dashboard (Fixed)',
+        endpoint: 'Student Dashboard (Refactored)',
         methods: ['GET'],
         description: 'Get student dashboard with assignments from enrolled classes',
-        authentication: 'Required - Supabase Auth',
+        authentication: 'Required - Centralized Auth Middleware',
         query_parameters: {
             student_id: 'Optional - defaults to authenticated user'
         },
@@ -273,11 +284,18 @@ export async function OPTIONS() {
             'Recent results for assignments',
             'Assignment details (due dates, instructions, attempts)'
         ],
-        key_fixes: [
-            'Now checks enrollments before showing assignments',
-            'Shows assignments instead of all published question papers',
-            'Includes assignment-specific data (due dates, instructions)',
-            'Proper error handling for non-enrolled students'
+        improvements: [
+            'Uses centralized auth middleware',
+            'Consistent with other APIs',
+            'Faster performance',
+            'Better error handling',
+            'Unified test mode support'
         ]
     });
 }
+
+// ===============================================================================
+// ✅ EXPORT WITH MIDDLEWARE PROTECTION
+// ===============================================================================
+export const GET = requireStudent(getStudentDashboardHandler);
+export const OPTIONS = getOptionsHandler;

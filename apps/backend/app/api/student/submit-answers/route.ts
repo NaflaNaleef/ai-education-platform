@@ -1,65 +1,10 @@
 // app/api/student/submit/route.ts
-// PRODUCTION SAFE - Graceful Clerk handling, works with real AI
+// REFACTORED: Using centralized auth middleware
 
-import { createRouteHandlerClient } from '@supabase/auth-helpers-nextjs';
-import { cookies } from 'next/headers';
 import { NextRequest, NextResponse } from 'next/server';
 import { aiClient } from '../../../../lib/ai/ai-client';
 import { supabaseAdmin } from '../../../../lib/db/supabase';
-
-// ✅ UPDATE IN ALL APIs - Replace old UUIDs with these:
-const TEST_TEACHER_ID = '73596418-7572-485a-929d-6f9688cb8a36';
-const TEST_STUDENT_ID = '87654321-4321-4321-4321-210987654321';
-const TEST_CLASS_ID = 'abcdef12-abcd-4321-abcd-123456789abc';
-
-// Helper function to safely check if Clerk is available
-function isClerkAvailable() {
-    return !!(process.env.NEXT_PUBLIC_CLERK_PUBLISHABLE_KEY && process.env.CLERK_SECRET_KEY);
-}
-
-// Helper function to get authenticated user
-async function getAuthenticatedUser(request: NextRequest) {
-    const isTestMode = process.env.NODE_ENV !== 'production' &&
-        (request.headers.get('x-test-mode') === 'true' || !isClerkAvailable());
-
-    const testStudentId = request.headers.get('x-test-student');
-
-    if (isTestMode) {
-        return {
-            user: { id: testStudentId || TEST_STUDENT_ID },
-            userProfile: { full_name: 'Test Student User', role: 'student' },
-            isTestMode: true
-        };
-    }
-
-    try {
-        const supabase = createRouteHandlerClient({ cookies });
-        const { data: { user }, error: userError } = await supabase.auth.getUser();
-
-        if (userError || !user) {
-            return { error: 'Unauthorized', status: 401 };
-        }
-
-        const { data: userProfile, error: profileError } = await supabase
-            .from('users')
-            .select('role, full_name')
-            .eq('id', user.id)
-            .single();
-
-        if (profileError || !userProfile) {
-            return { error: 'User profile not found', status: 403 };
-        }
-
-        return { user, userProfile, isTestMode: false };
-    } catch (error) {
-        console.warn('Auth check failed, falling back to test mode:', error);
-        return {
-            user: { id: testStudentId || TEST_STUDENT_ID },
-            userProfile: { full_name: 'Test Student User', role: 'student' },
-            isTestMode: true
-        };
-    }
-}
+import { requireStudent, getCurrentUser } from '../../../../lib/auth/middleware';
 
 interface SubmissionRequest {
     question_paper_id: string;
@@ -74,17 +19,13 @@ interface SubmissionRequest {
     submitted_at?: string;
 }
 
-export async function POST(request: NextRequest) {
+// ===============================================================================
+// 📝 SUBMIT ANSWERS HANDLER
+// ===============================================================================
+async function submitAnswersHandler(request: NextRequest) {
     try {
-        console.log('📝 Student quiz submission received');
-
-        const authResult = await getAuthenticatedUser(request);
-        if (authResult.error) {
-            return NextResponse.json({ error: authResult.error }, { status: authResult.status });
-        }
-
-        const { user, userProfile, isTestMode } = authResult;
-        console.log(`${isTestMode ? '🧪' : '👨‍🎓'} Student submission: ${isTestMode ? 'Test Mode' : 'Production'}`);
+        const user = getCurrentUser(request)!;
+        console.log(`📝 Student quiz submission from ${user.full_name}`);
 
         const {
             question_paper_id,
@@ -120,7 +61,7 @@ export async function POST(request: NextRequest) {
             }, { status: 403 });
         }
 
-        console.log(`📝 Processing submission for student ${student_id}, paper ${question_paper_id}`);
+        console.log(`📝 Processing submission for student ${user.full_name}, paper ${question_paper_id}`);
 
         // Get question paper to validate submission
         const { data: questionPaper, error: paperError } = await supabaseAdmin
@@ -204,7 +145,7 @@ export async function POST(request: NextRequest) {
             }, { status: 500 });
         }
 
-        console.log(`✅ Submission saved with ID: ${submission.id}`);
+        console.log(`✅ Submission saved with ID: ${submission.id} by ${user.full_name}`);
 
         let gradingResult = null;
         let resultId = null;
@@ -227,11 +168,11 @@ export async function POST(request: NextRequest) {
 
                 if (questionPaper.marking_scheme) {
                     gradingResult = await aiClient.gradeSubmissionWithMarkingScheme(gradingData, {
-                        user_id: student_id // ✅ Pass the actual student ID
+                        user_id: student_id
                     });
                 } else {
                     gradingResult = await aiClient.gradeSubmission(gradingData, {
-                        user_id: student_id // ✅ Pass the actual student ID
+                        user_id: student_id
                     });
                 }
 
@@ -272,7 +213,7 @@ export async function POST(request: NextRequest) {
                             })
                             .eq('id', submission.id);
 
-                        console.log(`✅ Auto-grading complete: ${gradingResult.percentage}%`);
+                        console.log(`✅ Auto-grading complete: ${gradingResult.percentage}% for ${user.full_name}`);
                     } else {
                         console.error('💥 Failed to save grading results:', resultError);
                     }
@@ -290,6 +231,7 @@ export async function POST(request: NextRequest) {
                 id: submission.id,
                 question_paper_id,
                 student_id,
+                student_name: user.full_name,
                 submitted_at: submission.submitted_at,
                 time_taken: submission.time_taken,
                 status: submission.status,
@@ -313,9 +255,10 @@ export async function POST(request: NextRequest) {
                 success: false,
                 message: 'Auto-grading failed - manual grading required'
             },
-            environment: process.env.NODE_ENV,
-            test_mode: isTestMode,
-            clerk_available: isClerkAvailable()
+            user: {
+                name: user.full_name,
+                test_mode: user.isTestMode
+            }
         });
 
     } catch (error) {
@@ -328,14 +271,12 @@ export async function POST(request: NextRequest) {
     }
 }
 
-export async function GET(request: NextRequest) {
+// ===============================================================================
+// 📖 GET QUIZ FOR TAKING HANDLER
+// ===============================================================================
+async function getQuizHandler(request: NextRequest) {
     try {
-        const authResult = await getAuthenticatedUser(request);
-        if (authResult.error) {
-            return NextResponse.json({ error: authResult.error }, { status: authResult.status });
-        }
-
-        const { user, isTestMode } = authResult;
+        const user = getCurrentUser(request)!;
 
         const { searchParams } = new URL(request.url);
         const question_paper_id = searchParams.get('question_paper_id');
@@ -345,6 +286,13 @@ export async function GET(request: NextRequest) {
             return NextResponse.json({
                 error: 'question_paper_id is required'
             }, { status: 400 });
+        }
+
+        // Verify access
+        if (student_id !== user.id) {
+            return NextResponse.json({
+                error: 'Access denied - can only access your own quiz'
+            }, { status: 403 });
         }
 
         // Get question paper for taking quiz
@@ -400,6 +348,8 @@ export async function GET(request: NextRequest) {
             options: q.type === 'multiple_choice' ? q.options : undefined
         }));
 
+        console.log(`📖 Quiz loaded for ${user.full_name}: ${questionPaper.title} (${studentQuestions.length} questions)`);
+
         return NextResponse.json({
             success: true,
             quiz: {
@@ -413,8 +363,10 @@ export async function GET(request: NextRequest) {
                 total_questions: studentQuestions.length,
                 questions: studentQuestions
             },
-            environment: process.env.NODE_ENV,
-            test_mode: isTestMode,
+            student: {
+                name: user.full_name,
+                test_mode: user.isTestMode
+            },
             instructions: [
                 'Answer all questions to the best of your ability',
                 'You can submit partial answers if needed',
@@ -432,3 +384,9 @@ export async function GET(request: NextRequest) {
         }, { status: 500 });
     }
 }
+
+// ===============================================================================
+// ✅ EXPORT WITH MIDDLEWARE PROTECTION
+// ===============================================================================
+export const POST = requireStudent(submitAnswersHandler);
+export const GET = requireStudent(getQuizHandler);

@@ -1,73 +1,16 @@
 // app/api/student/assignments/route.ts
-// PRODUCTION SAFE - Graceful Clerk handling, works in test and production
+// REFACTORED: Using centralized auth middleware
 
-import { createRouteHandlerClient } from '@supabase/auth-helpers-nextjs';
-import { cookies } from 'next/headers';
 import { NextRequest, NextResponse } from 'next/server';
 import { supabaseAdmin } from '../../../../lib/db/supabase';
+import { requireStudent, getCurrentUser } from '../../../../lib/auth/middleware';
 
-// ✅ UPDATE IN ALL APIs - Replace old UUIDs with these:
-const TEST_TEACHER_ID = '73596418-7572-485a-929d-6f9688cb8a36';
-const TEST_STUDENT_ID = '87654321-4321-4321-4321-210987654321';
-const TEST_CLASS_ID = 'abcdef12-abcd-4321-abcd-123456789abc';
-
-// Helper function to safely check if Clerk is available
-function isClerkAvailable() {
-    return !!(process.env.NEXT_PUBLIC_CLERK_PUBLISHABLE_KEY && process.env.CLERK_SECRET_KEY);
-}
-
-// Helper function to get authenticated user
-async function getAuthenticatedUser(request: NextRequest) {
-    const isTestMode = process.env.NODE_ENV !== 'production' &&
-        (request.headers.get('x-test-mode') === 'true' || !isClerkAvailable());
-
-    const testStudentId = request.headers.get('x-test-student');
-
-    if (isTestMode) {
-        return {
-            user: { id: testStudentId || TEST_STUDENT_ID },
-            userProfile: { full_name: 'Test Student User', role: 'student' },
-            isTestMode: true
-        };
-    }
-
+// ===============================================================================
+// 📚 GET STUDENT ASSIGNMENTS HANDLER
+// ===============================================================================
+async function getStudentAssignmentsHandler(request: NextRequest) {
     try {
-        const supabase = createRouteHandlerClient({ cookies });
-        const { data: { user }, error: userError } = await supabase.auth.getUser();
-
-        if (userError || !user) {
-            return { error: 'Unauthorized', status: 401 };
-        }
-
-        const { data: userProfile, error: profileError } = await supabase
-            .from('users')
-            .select('role, full_name')
-            .eq('id', user.id)
-            .single();
-
-        if (profileError || !userProfile) {
-            return { error: 'User profile not found', status: 403 };
-        }
-
-        return { user, userProfile, isTestMode: false };
-    } catch (error) {
-        console.warn('Auth check failed, falling back to test mode:', error);
-        return {
-            user: { id: testStudentId || TEST_STUDENT_ID },
-            userProfile: { full_name: 'Test Student User', role: 'student' },
-            isTestMode: true
-        };
-    }
-}
-
-export async function GET(request: NextRequest) {
-    try {
-        const authResult = await getAuthenticatedUser(request);
-        if (authResult.error) {
-            return NextResponse.json({ error: authResult.error }, { status: authResult.status });
-        }
-
-        const { user, isTestMode } = authResult;
+        const user = getCurrentUser(request)!;
 
         const { searchParams } = new URL(request.url);
         const student_id = searchParams.get('student_id') || user.id;
@@ -82,7 +25,7 @@ export async function GET(request: NextRequest) {
             }, { status: 403 });
         }
 
-        console.log(`📚 Getting assignments for student: ${student_id}, status: ${status} (${isTestMode ? 'test mode' : 'production'})`);
+        console.log(`📚 Getting assignments for student: ${user.full_name}, status: ${status}`);
 
         // Get all published question papers (available assignments)
         const { data: allAssignments, error: assignmentsError } = await supabaseAdmin
@@ -198,10 +141,13 @@ export async function GET(request: NextRequest) {
             ? (completedWithScores.reduce((sum, a) => sum + (a.completion?.score?.percentage || 0), 0) / completedWithScores.length).toFixed(1)
             : null;
 
+        console.log(`✅ Found ${totalAssignments} assignments for ${user.full_name} (${availableCount} available, ${completedCount} completed)`);
+
         return NextResponse.json({
             success: true,
             assignments: {
                 student_id,
+                student_name: user.full_name,
                 status_filter: status,
                 pagination: {
                     total: totalAssignments,
@@ -218,9 +164,10 @@ export async function GET(request: NextRequest) {
                 },
                 assignments: paginatedAssignments
             },
-            environment: process.env.NODE_ENV,
-            test_mode: isTestMode,
-            clerk_available: isClerkAvailable()
+            user: {
+                name: user.full_name,
+                test_mode: user.isTestMode
+            }
         });
 
     } catch (error) {
@@ -233,7 +180,10 @@ export async function GET(request: NextRequest) {
     }
 }
 
-export async function OPTIONS() {
+// ===============================================================================
+// 📋 GET ASSIGNMENT OPTIONS INFO
+// ===============================================================================
+function getAssignmentOptionsHandler() {
     return NextResponse.json({
         endpoint: 'Student Assignments',
         methods: ['GET'],
@@ -261,3 +211,9 @@ export async function OPTIONS() {
         }
     });
 }
+
+// ===============================================================================
+// ✅ EXPORT WITH MIDDLEWARE PROTECTION
+// ===============================================================================
+export const GET = requireStudent(getStudentAssignmentsHandler);
+export const OPTIONS = getAssignmentOptionsHandler;
