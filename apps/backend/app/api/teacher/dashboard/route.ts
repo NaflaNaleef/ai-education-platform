@@ -1,59 +1,17 @@
 // app/api/teacher/dashboard/route.ts
-// PRODUCTION SAFE - Auto-disables test mode in production
+// REFACTORED: Using centralized auth middleware
 
 import { NextRequest, NextResponse } from 'next/server';
-import { createRouteHandlerClient } from '@supabase/auth-helpers-nextjs';
-import { cookies } from 'next/headers';
 import { supabaseAdmin } from '../../../../lib/db/supabase';
+import { requireTeacher, getCurrentUser } from '../../../../lib/auth/middleware';
 
-// ✅ UPDATE IN ALL APIs - Replace old UUIDs with these:
-const TEST_TEACHER_ID = '73596418-7572-485a-929d-6f9688cb8a36';
-const TEST_STUDENT_ID = '87654321-4321-4321-4321-210987654321';
-const TEST_CLASS_ID = 'abcdef12-abcd-4321-abcd-123456789abc';
-
-// DASHBOARD API FIX - app/api/teacher/dashboard/route.ts
-// Replace the data aggregation section with this:
-
-export async function GET(request: NextRequest) {
+// ===============================================================================
+// 📊 GET TEACHER DASHBOARD HANDLER
+// ===============================================================================
+async function getTeacherDashboardHandler(request: NextRequest) {
     try {
-        console.log('📊 Loading teacher dashboard...');
-
-        // Your existing auth code stays the same...
-        const isTestMode = process.env.NODE_ENV !== 'production' &&
-            request.headers.get('x-test-mode') === 'true';
-
-        let user = null;
-        let userProfile = null;
-
-        if (!isTestMode) {
-            // Keep your existing auth code...
-            const supabase = createRouteHandlerClient({ cookies });
-            const { data: { user: authUser }, error: userError } = await supabase.auth.getUser();
-
-            if (userError || !authUser) {
-                return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
-            }
-
-            const { data: userProfileData, error: profileError } = await supabase
-                .from('users')
-                .select('role, full_name')
-                .eq('id', authUser.id)
-                .single();
-
-            if (profileError || userProfileData?.role !== 'teacher') {
-                return NextResponse.json({
-                    error: 'Access denied. Only teachers can access dashboard.'
-                }, { status: 403 });
-            }
-
-            user = authUser;
-            userProfile = userProfileData;
-        } else {
-            user = { id: TEST_TEACHER_ID };
-            userProfile = { full_name: 'Test Teacher User', role: 'teacher' };
-        }
-
-        // ✅ CORRECT QUERIES FOR YOUR SCHEMA
+        const user = getCurrentUser(request)!;
+        console.log(`📊 Loading teacher dashboard for ${user.full_name}`);
 
         // 1. Get teacher's classes
         const { data: teacherClasses, error: classesError } = await supabaseAdmin
@@ -207,12 +165,15 @@ export async function GET(request: NextRequest) {
             active_assignments: formattedAssignments
         };
 
-        console.log(`✅ Dashboard loaded: ${totalStudents} students, ${activeAssignments} active assignments, ${pendingGrading} pending grading, ${averageScore}% avg score`);
+        console.log(`✅ Dashboard loaded for ${user.full_name}: ${totalStudents} students, ${activeAssignments} active assignments, ${pendingGrading} pending grading, ${averageScore}% avg score`);
 
         return NextResponse.json({
             success: true,
             data: dashboardData,
-            environment: process.env.NODE_ENV,
+            teacher: {
+                name: user.full_name,
+                test_mode: user.isTestMode
+            },
             timestamp: new Date().toISOString()
         });
 
@@ -225,3 +186,8 @@ export async function GET(request: NextRequest) {
         }, { status: 500 });
     }
 }
+
+// ===============================================================================
+// ✅ EXPORT WITH MIDDLEWARE PROTECTION
+// ===============================================================================
+export const GET = requireTeacher(getTeacherDashboardHandler);

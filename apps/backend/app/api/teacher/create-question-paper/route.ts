@@ -1,76 +1,20 @@
 // app/api/teacher/create-question-paper/route.ts
-// UPDATED: Now supports test mode for end-to-end testing
+// REFACTORED: Using centralized auth middleware
 
 import { NextRequest, NextResponse } from 'next/server';
 import { createRouteHandlerClient } from '@supabase/auth-helpers-nextjs';
 import { cookies } from 'next/headers';
 import { aiClient } from '../../../../lib/ai/ai-client';
 import { supabaseAdmin } from '../../../../lib/db/supabase';
+import { requireTeacher, getCurrentUser } from '../../../../lib/auth/middleware';
 
-// ✅ UPDATE IN ALL APIs - Replace old UUIDs with these:
-const TEST_TEACHER_ID = '73596418-7572-485a-929d-6f9688cb8a36';
-const TEST_STUDENT_ID = '87654321-4321-4321-4321-210987654321';
-const TEST_CLASS_ID = 'abcdef12-abcd-4321-abcd-123456789abc';
-
-// Helper function to safely check if Clerk is available
-function isClerkAvailable() {
-    return !!(process.env.NEXT_PUBLIC_CLERK_PUBLISHABLE_KEY && process.env.CLERK_SECRET_KEY);
-}
-
-// Helper function to get authenticated user
-async function getAuthenticatedUser(request: NextRequest) {
-    const isTestMode = process.env.NODE_ENV !== 'production' &&
-        (request.headers.get('x-test-mode') === 'true' || !isClerkAvailable());
-
-    if (isTestMode) {
-        return {
-            user: { id: TEST_TEACHER_ID },
-            userProfile: { full_name: 'Test Teacher User', role: 'teacher' },
-            isTestMode: true
-        };
-    }
-
+// ===============================================================================
+// 🚀 CREATE QUESTION PAPER HANDLER
+// ===============================================================================
+async function createQuestionPaperHandler(request: NextRequest) {
     try {
-        const supabase = createRouteHandlerClient({ cookies });
-        const { data: { user }, error: userError } = await supabase.auth.getUser();
-
-        if (userError || !user) {
-            return { error: 'Unauthorized', status: 401 };
-        }
-
-        const { data: userProfile, error: profileError } = await supabase
-            .from('users')
-            .select('role, full_name')
-            .eq('id', user.id)
-            .single();
-
-        if (profileError || userProfile?.role !== 'teacher') {
-            return { error: 'Access denied. Only teachers can create question papers.', status: 403 };
-        }
-
-        return { user, userProfile, isTestMode: false };
-    } catch (error) {
-        console.warn('Auth check failed, falling back to test mode:', error);
-        return {
-            user: { id: TEST_TEACHER_ID },
-            userProfile: { full_name: 'Test Teacher User', role: 'teacher' },
-            isTestMode: true
-        };
-    }
-}
-
-export async function POST(request: NextRequest) {
-    try {
-        console.log('🚀 Starting complete question paper creation flow...');
-
-        // ✅ SMART AUTHENTICATION
-        const authResult = await getAuthenticatedUser(request);
-        if (authResult.error) {
-            return NextResponse.json({ error: authResult.error }, { status: authResult.status });
-        }
-
-        const { user, userProfile, isTestMode } = authResult;
-        console.log(`${isTestMode ? '🧪' : '🔐'} Question paper creation: ${isTestMode ? 'Test Mode' : 'Production'}`);
+        const user = getCurrentUser(request)!;
+        console.log(`🚀 Starting complete question paper creation flow for ${user.full_name}`);
 
         const {
             resource_id,
@@ -90,7 +34,7 @@ export async function POST(request: NextRequest) {
             }, { status: 400 });
         }
 
-        console.log(`📚 Processing resource: ${resource_id} for teacher: ${user.id}`);
+        console.log(`📚 Processing resource: ${resource_id} for teacher: ${user.full_name}`);
 
         // Step 1: Get resource and verify ownership
         const { data: resource, error: resourceError } = await supabaseAdmin
@@ -123,7 +67,7 @@ export async function POST(request: NextRequest) {
             try {
                 console.log(`🌐 Fetching from URL: ${resource.file_url}`);
 
-                if (!isTestMode) {
+                if (!user.isTestMode) {
                     const response = await fetch(resource.file_url);
                     if (response.ok) {
                         fileContent = await response.text();
@@ -153,7 +97,7 @@ export async function POST(request: NextRequest) {
             }
         }
         // Try file_path
-        else if (!isTestMode && resource.file_path) {
+        else if (!user.isTestMode && resource.file_path) {
             try {
                 console.log(`📂 Downloading from storage: ${resource.file_path}`);
                 const supabase = createRouteHandlerClient({ cookies });
@@ -171,7 +115,7 @@ export async function POST(request: NextRequest) {
         }
 
         if (!fileContent || fileContent.length < 50) {
-            if (isTestMode) {
+            if (user.isTestMode) {
                 // Provide fallback content for testing
                 fileContent = `Mock educational content for testing question generation about ${resource.title}. This covers topics in ${resource.subject} suitable for ${resource.grade_level} students.`;
                 console.log('🧪 Using fallback mock content for testing');
@@ -192,7 +136,7 @@ export async function POST(request: NextRequest) {
                 file_type: resource.file_type || 'text/plain',
                 resource_id: resource_id
             }, {
-                user_id: user.id // ✅ Pass the actual user ID
+                user_id: user.id
             });
 
             if (analysisResult.success) {
@@ -219,7 +163,7 @@ export async function POST(request: NextRequest) {
             difficulty_level: difficulty_level,
             question_types: question_types
         }, {
-            user_id: user.id, // ✅ Pass the actual user ID
+            user_id: user.id,
             resource_id: resource_id
         });
 
@@ -239,7 +183,7 @@ export async function POST(request: NextRequest) {
         const markingSchemeResult = await aiClient.generateMarkingScheme(
             questionResult.questions,
             {
-                user_id: user.id // ✅ Pass the actual user ID
+                user_id: user.id
             }
         );
 
@@ -295,7 +239,7 @@ export async function POST(request: NextRequest) {
             }, { status: 500 });
         }
 
-        console.log(`✅ Question paper saved successfully: ${questionPaper.id}`);
+        console.log(`✅ Question paper saved successfully: ${questionPaper.id} by ${user.full_name}`);
 
         // Step 8: Return complete result
         return NextResponse.json({
@@ -314,7 +258,7 @@ export async function POST(request: NextRequest) {
                 status: questionPaper.status,
                 created_at: questionPaper.created_at,
                 resource_title: questionPaper.resources?.title || resource.title,
-                teacher_name: questionPaper.users?.full_name || userProfile.full_name
+                teacher_name: questionPaper.users?.full_name || user.full_name
             },
             ai_generation: {
                 questions_generated: questionResult.total_questions,
@@ -327,9 +271,8 @@ export async function POST(request: NextRequest) {
                     content_type: analysisResult.content_type
                 } : null
             },
-            environment: process.env.NODE_ENV,
-            test_mode: isTestMode,
-            clerk_available: isClerkAvailable(),
+            teacher: user.full_name,
+            test_mode: user.isTestMode,
             next_steps: [
                 'Question paper is published and ready for assignments',
                 'Create assignment to assign to classes',
@@ -349,14 +292,12 @@ export async function POST(request: NextRequest) {
     }
 }
 
-export async function GET(request: NextRequest) {
+// ===============================================================================
+// 📋 GET QUESTION PAPERS HANDLER
+// ===============================================================================
+async function getQuestionPapersHandler(request: NextRequest) {
     try {
-        const authResult = await getAuthenticatedUser(request);
-        if (authResult.error) {
-            return NextResponse.json({ error: authResult.error }, { status: authResult.status });
-        }
-
-        const { user, isTestMode } = authResult;
+        const user = getCurrentUser(request)!;
 
         const { searchParams } = new URL(request.url);
         const resource_id = searchParams.get('resource_id');
@@ -388,11 +329,13 @@ export async function GET(request: NextRequest) {
             }, { status: 500 });
         }
 
+        console.log(`📋 Found ${questionPapers?.length || 0} question papers for resource ${resource_id} by ${user.full_name}`);
+
         return NextResponse.json({
             success: true,
             question_papers: questionPapers || [],
-            environment: process.env.NODE_ENV,
-            test_mode: isTestMode
+            teacher: user.full_name,
+            test_mode: user.isTestMode
         });
 
     } catch (error) {
@@ -403,3 +346,9 @@ export async function GET(request: NextRequest) {
         }, { status: 500 });
     }
 }
+
+// ===============================================================================
+// ✅ EXPORT WITH MIDDLEWARE PROTECTION
+// ===============================================================================
+export const POST = requireTeacher(createQuestionPaperHandler);
+export const GET = requireTeacher(getQuestionPapersHandler);

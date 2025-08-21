@@ -1,56 +1,17 @@
 // app/api/teacher/students/route.ts
-// PRODUCTION SAFE - Auto-disables test mode in production
+// REFACTORED: Using centralized auth middleware
 
 import { NextRequest, NextResponse } from 'next/server';
-import { createRouteHandlerClient } from '@supabase/auth-helpers-nextjs';
-import { cookies } from 'next/headers';
 import { supabaseAdmin } from '../../../../lib/db/supabase';
+import { requireTeacher, getCurrentUser } from '../../../../lib/auth/middleware';
 
-// ✅ UPDATE IN ALL APIs - Replace old UUIDs with these:
-const TEST_TEACHER_ID = '73596418-7572-485a-929d-6f9688cb8a36';
-const TEST_STUDENT_ID = '87654321-4321-4321-4321-210987654321';
-const TEST_CLASS_ID = 'abcdef12-abcd-4321-abcd-123456789abc';
-
-export async function GET(request: NextRequest) {
+// ===============================================================================
+// 👥 GET TEACHER STUDENTS HANDLER
+// ===============================================================================
+async function getTeacherStudentsHandler(request: NextRequest) {
     try {
-        console.log('👥 Loading teacher students...');
-
-        // Your existing auth code stays the same...
-        const isTestMode = process.env.NODE_ENV !== 'production' &&
-            request.headers.get('x-test-mode') === 'true';
-
-        let user = null;
-        let userProfile = null;
-
-        if (!isTestMode) {
-            // Your existing auth code...
-            const supabase = createRouteHandlerClient({ cookies });
-            const { data: { user: authUser }, error: userError } = await supabase.auth.getUser();
-
-            if (userError || !authUser) {
-                return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
-            }
-
-            const { data: userProfileData, error: profileError } = await supabase
-                .from('users')
-                .select('role, full_name')
-                .eq('id', authUser.id)
-                .single();
-
-            if (profileError || userProfileData?.role !== 'teacher') {
-                return NextResponse.json({
-                    error: 'Access denied. Only teachers can access students.'
-                }, { status: 403 });
-            }
-
-            user = authUser;
-            userProfile = userProfileData;
-        } else {
-            user = { id: TEST_TEACHER_ID };
-            userProfile = { full_name: 'Test Teacher User', role: 'teacher' };
-        }
-
-        console.log(`👨‍🏫 Loading students for teacher: ${userProfile.full_name} (${user.id})`);
+        const user = getCurrentUser(request)!;
+        console.log(`👥 Loading students for teacher: ${user.full_name}`);
 
         // Step 1: Get teacher's classes
         const { data: teacherClasses, error: classesError } = await supabaseAdmin
@@ -81,6 +42,10 @@ export async function GET(request: NextRequest) {
                         new_this_month: 0
                     },
                     students: []
+                },
+                teacher: {
+                    name: user.full_name,
+                    test_mode: user.isTestMode
                 }
             });
         }
@@ -155,7 +120,7 @@ export async function GET(request: NextRequest) {
         const studentMap = new Map();
 
         enrollments?.forEach(enrollment => {
-            // 🔧 PROPER FIX: Handle both array and single object cases
+            // Handle both array and single object cases
             let student;
 
             if (Array.isArray(enrollment.users)) {
@@ -265,7 +230,7 @@ export async function GET(request: NextRequest) {
             new_this_month: newThisMonth
         };
 
-        console.log(`✅ Students loaded: ${totalStudents} students, avg GPA: ${averageGpa}`);
+        console.log(`✅ Students loaded for ${user.full_name}: ${totalStudents} students, avg GPA: ${averageGpa}`);
 
         return NextResponse.json({
             success: true,
@@ -273,7 +238,10 @@ export async function GET(request: NextRequest) {
                 overview,
                 students: studentsArray
             },
-            environment: process.env.NODE_ENV,
+            teacher: {
+                name: user.full_name,
+                test_mode: user.isTestMode
+            },
             timestamp: new Date().toISOString()
         });
 
@@ -287,44 +255,13 @@ export async function GET(request: NextRequest) {
     }
 }
 
-// POST method for adding new students
-export async function POST(request: NextRequest) {
+// ===============================================================================
+// 👨‍🎓 CREATE STUDENT HANDLER
+// ===============================================================================
+async function createStudentHandler(request: NextRequest) {
     try {
-        // 🔒 PRODUCTION SAFE - same pattern for POST
-        const isTestMode = process.env.NODE_ENV !== 'production' &&
-            request.headers.get('x-test-mode') === 'true';
-
-        let user = null;
-
-        if (!isTestMode) {
-            // 🔒 PRODUCTION AUTH
-            const supabase = createRouteHandlerClient({ cookies });
-            const { data: { user: authUser }, error: userError } = await supabase.auth.getUser();
-
-            if (userError || !authUser) {
-                return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
-            }
-
-            // Verify user is a teacher
-            const { data: userProfile, error: profileError } = await supabase
-                .from('users')
-                .select('role')
-                .eq('id', authUser.id)
-                .single();
-
-            if (profileError || userProfile?.role !== 'teacher') {
-                return NextResponse.json({
-                    error: 'Access denied. Only teachers can add students.'
-                }, { status: 403 });
-            }
-
-            user = authUser;
-
-        } else {
-            // 🧪 DEV ONLY
-            user = { id: TEST_TEACHER_ID };
-            console.log('🧪 DEV MODE: Creating student for mock teacher');
-        }
+        const user = getCurrentUser(request)!;
+        console.log(`👨‍🎓 Creating student for teacher: ${user.full_name}`);
 
         const { full_name, email, grade_level } = await request.json();
 
@@ -356,7 +293,7 @@ export async function POST(request: NextRequest) {
             }, { status: 500 });
         }
 
-        console.log(`✅ Student created: ${newStudent.full_name}`);
+        console.log(`✅ Student created: ${newStudent.full_name} by ${user.full_name}`);
 
         return NextResponse.json({
             success: true,
@@ -374,7 +311,9 @@ export async function POST(request: NextRequest) {
                 status: 'inactive',
                 enrolled_date: newStudent.created_at
             },
-            message: 'Student created successfully'
+            message: 'Student created successfully',
+            created_by: user.full_name,
+            test_mode: user.isTestMode
         });
 
     } catch (error) {
@@ -386,3 +325,9 @@ export async function POST(request: NextRequest) {
         }, { status: 500 });
     }
 }
+
+// ===============================================================================
+// ✅ EXPORT WITH MIDDLEWARE PROTECTION
+// ===============================================================================
+export const GET = requireTeacher(getTeacherStudentsHandler);
+export const POST = requireTeacher(createStudentHandler);

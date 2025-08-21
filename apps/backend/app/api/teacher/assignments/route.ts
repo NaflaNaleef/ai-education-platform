@@ -1,59 +1,20 @@
 // app/api/teacher/assignments/route.ts
-// PRODUCTION SAFE - Auto-disables test mode in production
+// PRODUCTION SAFE - Now using centralized auth middleware
 
 import { NextRequest, NextResponse } from 'next/server';
-import { createRouteHandlerClient } from '@supabase/auth-helpers-nextjs';
-import { cookies } from 'next/headers';
 import { supabaseAdmin } from '../../../../lib/db/supabase';
+import { requireTeacher, getCurrentUser } from '../../../../lib/auth/middleware';
 
-// ✅ UPDATE IN ALL APIs - Replace old UUIDs with these:
-const TEST_TEACHER_ID = '73596418-7572-485a-929d-6f9688cb8a36';
-const TEST_STUDENT_ID = '87654321-4321-4321-4321-210987654321';
-const TEST_CLASS_ID = 'abcdef12-abcd-4321-abcd-123456789abc';
-
-// ASSIGNMENTS API FIX - app/api/teacher/assignments/route.ts
-// Replace the main query section with this:
-
-export async function GET(request: NextRequest) {
+// ===============================================================================
+// 📋 GET ASSIGNMENTS HANDLER
+// ===============================================================================
+async function getAssignmentsHandler(request: NextRequest) {
     try {
         console.log('📋 Loading teacher assignments...');
-
-        // Your existing auth code stays the same...
-        const isTestMode = process.env.NODE_ENV !== 'production' &&
-            request.headers.get('x-test-mode') === 'true';
-
-        let user = null;
-        let userProfile = null;
-
-        if (!isTestMode) {
-            // Keep your existing auth code...
-            const supabase = createRouteHandlerClient({ cookies });
-            const { data: { user: authUser }, error: userError } = await supabase.auth.getUser();
-
-            if (userError || !authUser) {
-                return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
-            }
-
-            const { data: userProfileData, error: profileError } = await supabase
-                .from('users')
-                .select('role, full_name')
-                .eq('id', authUser.id)
-                .single();
-
-            if (profileError || userProfileData?.role !== 'teacher') {
-                return NextResponse.json({
-                    error: 'Access denied. Only teachers can access assignments.'
-                }, { status: 403 });
-            }
-
-            user = authUser;
-            userProfile = userProfileData;
-        } else {
-            user = { id: TEST_TEACHER_ID };
-            userProfile = { full_name: 'Test Teacher User', role: 'teacher' };
-        }
-
-        // ✅ CORRECT QUERIES FOR YOUR SCHEMA
+        
+        // ✅ USER IS GUARANTEED TO BE A TEACHER
+        const user = getCurrentUser(request)!;
+        console.log(`✅ Teacher ${user.full_name} loading assignments`);
 
         // 1. Get teacher's classes
         const { data: teacherClasses, error: classesError } = await supabaseAdmin
@@ -252,6 +213,8 @@ export async function GET(request: NextRequest) {
                 assignments: assignmentsWithStats
             },
             environment: process.env.NODE_ENV,
+            teacher: user.full_name,
+            test_mode: user.isTestMode,
             timestamp: new Date().toISOString()
         });
 
@@ -265,39 +228,16 @@ export async function GET(request: NextRequest) {
     }
 }
 
-// POST method for creating assignments stays similar but creates assignment records
-export async function POST(request: NextRequest) {
+// ===============================================================================
+// 📝 CREATE ASSIGNMENT HANDLER
+// ===============================================================================
+async function createAssignmentHandler(request: NextRequest) {
     try {
-        // Your auth code stays the same...
-        const isTestMode = process.env.NODE_ENV !== 'production' &&
-            request.headers.get('x-test-mode') === 'true';
-
-        let user = null;
-
-        if (!isTestMode) {
-            const supabase = createRouteHandlerClient({ cookies });
-            const { data: { user: authUser }, error: userError } = await supabase.auth.getUser();
-
-            if (userError || !authUser) {
-                return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
-            }
-
-            const { data: userProfile, error: profileError } = await supabase
-                .from('users')
-                .select('role')
-                .eq('id', authUser.id)
-                .single();
-
-            if (profileError || userProfile?.role !== 'teacher') {
-                return NextResponse.json({
-                    error: 'Access denied. Only teachers can create assignments.'
-                }, { status: 403 });
-            }
-
-            user = authUser;
-        } else {
-            user = { id: 'test-teacher-123' };
-        }
+        console.log('📝 Creating new assignment...');
+        
+        // ✅ USER IS GUARANTEED TO BE A TEACHER
+        const user = getCurrentUser(request)!;
+        console.log(`✅ Teacher ${user.full_name} creating assignment`);
 
         const {
             question_paper_id,
@@ -314,6 +254,21 @@ export async function POST(request: NextRequest) {
                 success: false,
                 error: 'Missing required fields: question_paper_id, class_id, title'
             }, { status: 400 });
+        }
+
+        // Verify teacher owns this class
+        const { data: teacherClass, error: classError } = await supabaseAdmin
+            .from('classes')
+            .select('id')
+            .eq('id', class_id)
+            .eq('teacher_id', user.id)
+            .single();
+
+        if (classError || !teacherClass) {
+            return NextResponse.json({
+                success: false,
+                error: 'Class not found or access denied'
+            }, { status: 404 });
         }
 
         // Create new assignment
@@ -351,7 +306,9 @@ export async function POST(request: NextRequest) {
                 instructions: newAssignment.instructions,
                 max_attempts: newAssignment.max_attempts
             },
-            message: 'Assignment created successfully'
+            message: 'Assignment created successfully',
+            teacher: user.full_name,
+            test_mode: user.isTestMode
         });
 
     } catch (error) {
@@ -363,3 +320,9 @@ export async function POST(request: NextRequest) {
         }, { status: 500 });
     }
 }
+
+// ===============================================================================
+// ✅ EXPORT WITH MIDDLEWARE PROTECTION
+// ===============================================================================
+export const GET = requireTeacher(getAssignmentsHandler);
+export const POST = requireTeacher(createAssignmentHandler);
